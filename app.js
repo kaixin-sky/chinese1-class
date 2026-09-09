@@ -49,14 +49,15 @@ async function restoreStudent(key){
   const {data,error}=await sb.rpc(rpc,{p_token:x.token});
   if(!error&&data?.ok){student={id:data.id,login_no:data.login_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
 }
-function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();}
+function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();}
 function openStudentApp(){
   $('#loginCard').classList.add('hidden');$('#studentApp').classList.remove('hidden');
   $('#who').textContent=`${student.login_no}번 ${student.name} · ${student.course_name||courseLabel(student.course)} · ${student.semester_name}`;
   $('#sQuizTab').classList.toggle('hidden',!isChinese(student.course));
+  $('#sPledgeTab').classList.toggle('hidden',isChinese(student.course));
   renderStudentAttendance();
   if(isChinese(student.course))renderChineseQuiz(); else $('#quizPane').innerHTML='';
-  renderStudentFinal();renderStudentHomework();renderStudentScores();
+  renderStudentFinal();renderStudentHomework();if(!isChinese(student.course))renderStudentPledge();renderStudentScores();
   processPendingLinks();
 }
 $('#loginBtn').onclick=async()=>{
@@ -129,6 +130,24 @@ async function renderStudentHomework(){
   }
 }
 async function submitChineseHomework(week,code,el){const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_check_homework`,{p_token:studentToken,p_week:week,p_code:code});if(error||!data?.ok)msg(el,data?.message||error?.message||'실패');else{msg(el,'과제가 확인되었습니다.',true);renderStudentScores()}}
+async function renderStudentPledge(){
+  const pane=$('#pledgePane');if(!pane||!studentToken)return;
+  if(isChinese(student.course)){pane.innerHTML='';return}
+  pane.innerHTML='<div class="card">각서 확인 중…</div>';
+  const {data,error}=await sb.rpc('lg_get_pledge',{p_token:studentToken});
+  if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
+  if(!data?.ok){pane.innerHTML=`<div class="card bad">${esc(data?.message||'각서를 불러오지 못했습니다.')}</div>`;return}
+  if(!data.available){pane.innerHTML='<div class="card"><h3 class="section-title">각서</h3><div class="muted">현재 학생에게 공개된 각서가 없습니다.</div></div>';return}
+  if(data.signed){pane.innerHTML=`<div class="card"><h3 class="section-title">각서</h3><div class="pledgebox">${esc(data.content)}</div><div class="ok" style="margin-top:12px">서명 및 확인 완료</div><div class="muted">버전 ${data.version} · 확인시각 ${new Date(data.confirmed_at).toLocaleString()}</div></div>`;return}
+  pane.innerHTML=`<div class="card"><h3 class="section-title">각서</h3><div class="muted">내용을 읽은 뒤 아래에 손가락으로 직접 서명하고 확인 버튼을 누르세요. · 버전 ${data.version}</div><div class="pledgebox" style="margin-top:12px">${esc(data.content)}</div><label class="q" style="display:flex;gap:8px;align-items:flex-start"><input id="pledgeAgree" type="checkbox" style="width:auto;min-height:auto;margin-top:3px"> <span>위 내용을 모두 읽고 확인하였으며 이에 동의합니다.</span></label><div class="signature-wrap"><div class="muted" style="margin-bottom:6px">서명</div><canvas id="signaturePad" class="signature-pad" width="900" height="260"></canvas><div class="row" style="margin-top:8px"><button id="clearSignature">서명 지우기</button><button id="submitPledge" class="primary">서명 및 확인</button></div></div><div id="pledgeMsg" class="muted" style="margin-top:8px"></div></div>`;
+  const canvas=$('#signaturePad'),ctx=canvas.getContext('2d');ctx.lineWidth=3;ctx.lineCap='round';ctx.lineJoin='round';ctx.strokeStyle='#172033';let drawing=false,dirty=false,last=null;
+  const point=e=>{const r=canvas.getBoundingClientRect();return {x:(e.clientX-r.left)*canvas.width/r.width,y:(e.clientY-r.top)*canvas.height/r.height}};
+  canvas.onpointerdown=e=>{e.preventDefault();drawing=true;dirty=true;last=point(e);try{canvas.setPointerCapture(e.pointerId)}catch{}};
+  canvas.onpointermove=e=>{if(!drawing)return;e.preventDefault();const q=point(e);ctx.beginPath();ctx.moveTo(last.x,last.y);ctx.lineTo(q.x,q.y);ctx.stroke();last=q};
+  const stop=e=>{drawing=false;last=null;try{canvas.releasePointerCapture(e.pointerId)}catch{}};canvas.onpointerup=stop;canvas.onpointercancel=stop;canvas.onpointerleave=e=>{if(drawing)stop(e)};
+  $('#clearSignature').onclick=()=>{ctx.clearRect(0,0,canvas.width,canvas.height);dirty=false;clearMsg($('#pledgeMsg'))};
+  $('#submitPledge').onclick=async()=>{if(!$('#pledgeAgree').checked){msg($('#pledgeMsg'),'각서 확인란에 체크하세요.');return}if(!dirty){msg($('#pledgeMsg'),'서명란에 직접 서명하세요.');return}const sig=canvas.toDataURL('image/png');const {data:r,error:e}=await sb.rpc('lg_sign_pledge',{p_token:studentToken,p_version:Number(data.version),p_signature_data:sig});if(e||!r?.ok){msg($('#pledgeMsg'),r?.message||e?.message||'서명 저장 실패');return}msg($('#pledgeMsg'),'서명 및 확인이 완료되었습니다.',true);setTimeout(renderStudentPledge,500)};
+}
 async function processPendingLinks(){
   const u=new URL(location.href);
   if(isChinese(student.course)){const w=Number(u.searchParams.get('homework_week')),code=u.searchParams.get('code');if(w&&code){switchStudentTab('homework');await renderStudentHomework();if($('#hwweek'))$('#hwweek').value=String(w);if($('#hwcode'))$('#hwcode').value=code;await submitChineseHomework(w,code,$('#hwmsg'));cleanQuery(['homework_week','code']);}}
@@ -155,12 +174,12 @@ async function openTeacherApp(){$('#teacherLogin').classList.add('hidden');$('#t
 async function loadSemesters(){const {data,error}=await sb.from('c1_semesters').select('*').order('id',{ascending:false});if(error){alert(error.message);return}semesters=data||[];const active=semesters.find(x=>x.is_active);if(!teacherSemesterId||!semesters.some(x=>Number(x.id)===Number(teacherSemesterId)))teacherSemesterId=active?.id||semesters[0]?.id||null;$('#semesterSelect').innerHTML=semesters.map(s=>`<option value="${s.id}" ${Number(s.id)===Number(teacherSemesterId)?'selected':''}>${esc(s.name)}${s.is_active?' ★':''}</option>`).join('');updateSemesterBadge();await loadTeacherCourseNames()}
 function updateSemesterBadge(){const sem=selectedSemester();$('#semesterBadge').textContent=sem?(sem.is_active?'현재 학생용 활성 학기':'과거/비활성 학기'):''}
 $('#semesterSelect').onchange=async()=>{teacherSemesterId=Number($('#semesterSelect').value);updateSemesterBadge();await loadTeacherCourseNames();renderTeacherTab(currentTeacherTab)};
-$('#teacherCourseSelect').onchange=async()=>{teacherCourse=$('#teacherCourseSelect').value;clearInterval(homeworkQrTimer);homeworkQrTimer=null;await loadTeacherCourseNames();applyTeacherCourseTabs();if((isChinese(teacherCourse)&&currentTeacherTab==='midterm')||(!isChinese(teacherCourse)&&currentTeacherTab==='quiz'))currentTeacherTab='semester';switchTeacherPane(currentTeacherTab);renderTeacherTab(currentTeacherTab)};
+$('#teacherCourseSelect').onchange=async()=>{teacherCourse=$('#teacherCourseSelect').value;clearInterval(homeworkQrTimer);homeworkQrTimer=null;await loadTeacherCourseNames();applyTeacherCourseTabs();if((isChinese(teacherCourse)&&(currentTeacherTab==='midterm'||currentTeacherTab==='pledge'))||(!isChinese(teacherCourse)&&currentTeacherTab==='quiz'))currentTeacherTab='semester';switchTeacherPane(currentTeacherTab);renderTeacherTab(currentTeacherTab)};
 async function loadTeacherCourseNames(){const sem=selectedSemester();if(!sem)return;const {data}=await sb.from('lg_course_settings').select('slot,display_name').eq('semester_id',sem.id);(data||[]).forEach(x=>largeNames[x.slot]=x.display_name);const sel=$('#teacherCourseSelect');[...sel.options].forEach(o=>{if(o.value==='large1'||o.value==='large2')o.textContent=`${COURSES[o.value].label} · ${largeNames[o.value]||COURSES[o.value].label}`});const b1=$('#studentCoursePick [data-course="large1"]'),b2=$('#studentCoursePick [data-course="large2"]');if(b1)b1.textContent=largeNames.large1;if(b2)b2.textContent=largeNames.large2}
-function applyTeacherCourseTabs(){$('#tQuizTab').classList.toggle('hidden',!isChinese(teacherCourse));$('#tMidtermTab').classList.toggle('hidden',isChinese(teacherCourse))}
+function applyTeacherCourseTabs(){$('#tQuizTab').classList.toggle('hidden',!isChinese(teacherCourse));$('#tMidtermTab').classList.toggle('hidden',isChinese(teacherCourse));$('#tPledgeTab').classList.toggle('hidden',isChinese(teacherCourse))}
 function switchTeacherPane(tab){$$('#ttabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.tpane').forEach(x=>x.classList.add('hidden'));const p=$('#t'+tab);if(p)p.classList.remove('hidden')}
 $$('#ttabs button').forEach(b=>b.onclick=()=>{currentTeacherTab=b.dataset.tab;clearInterval(homeworkQrTimer);homeworkQrTimer=null;switchTeacherPane(currentTeacherTab);renderTeacherTab(currentTeacherTab)});
-function renderTeacherTab(tab){if(!selectedSemester())return;const map={semester:renderTeacherSemester,qr:renderTeacherQR,attendance:renderTeacherAttendance,quiz:renderTeacherQuiz,midterm:renderTeacherMidterm,final:renderTeacherFinal,homework:renderTeacherHomework,grades:renderTeacherGrades};if(map[tab])map[tab]()}
+function renderTeacherTab(tab){if(!selectedSemester())return;const map={semester:renderTeacherSemester,qr:renderTeacherQR,attendance:renderTeacherAttendance,quiz:renderTeacherQuiz,midterm:renderTeacherMidterm,final:renderTeacherFinal,homework:renderTeacherHomework,pledge:renderTeacherPledge,grades:renderTeacherGrades};if(map[tab])map[tab]()}
 
 async function getRoster(){const sem=selectedSemester();if(isChinese(teacherCourse)){const p=cPrefix(teacherCourse);const {data,error}=await sb.from(`${p}_students`).select('id,login_no,name').eq('semester_id',sem.id).order('login_no');return {data:data||[],error}}const {data,error}=await sb.from('lg_students').select('id,login_no,name').eq('semester_id',sem.id).eq('slot',course(teacherCourse).slot).order('login_no');return {data:data||[],error}}
 function parseRosterText(text){return text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{const parts=line.split(/[\t,]/).map(x=>x.trim()).filter(Boolean);if(parts.length>1&&/^\d+$/.test(parts[0]))return parts.slice(1).join(' ');return line.replace(/^\d+[.)\-\s]+/,'').trim()}).filter(Boolean)}
@@ -220,6 +239,24 @@ async function renderTeacherLargeHomework(){
   $('#startDynQR').onclick=async()=>{const {error}=await sb.rpc('lg_start_homework_session',{p_semester_id:sem.id,p_slot:sl});if(error){msg($('#dynMsg'),error.message);return}await update();clearInterval(homeworkQrTimer);homeworkQrTimer=setInterval(update,3000)};
   $('#stopDynQR').onclick=async()=>{if(!confirm('과제 QR을 종료할까요? 종료 즉시 기존 QR은 사용할 수 없습니다.'))return;const {error}=await sb.rpc('lg_stop_homework_session',{p_semester_id:sem.id,p_slot:sl});clearInterval(homeworkQrTimer);homeworkQrTimer=null;if(error)msg($('#dynMsg'),error.message);else update()};
   await update();const {data}=await sb.rpc('lg_get_homework_qr',{p_semester_id:sem.id,p_slot:sl});if(data?.active)homeworkQrTimer=setInterval(update,3000);
+}
+
+async function renderTeacherPledge(){
+  const pane=$('#tpledge');if(!pane)return;if(isChinese(teacherCourse)){pane.innerHTML='';return}
+  const sem=selectedSemester(),sl=course(teacherCourse).slot;
+  pane.innerHTML='<div class="card">각서 불러오는 중…</div>';
+  const [{data:pledges,error:pe},{data:roster,error:re}]=await Promise.all([
+    sb.from('lg_pledges').select('version,content,is_open,updated_at').eq('semester_id',sem.id).eq('slot',sl).order('version',{ascending:false}).limit(1),
+    sb.from('lg_students').select('id,login_no,name').eq('semester_id',sem.id).eq('slot',sl).order('login_no')
+  ]);
+  if(pe||re){pane.innerHTML=`<div class="card bad">${esc(pe?.message||re?.message||'각서를 불러오지 못했습니다.')}</div>`;return}
+  const cur=(pledges||[])[0]||{version:0,content:'',is_open:false};let sigs=[];
+  if(cur.version>0){const r=await sb.from('lg_pledge_signatures').select('student_id,version,signature_data,confirmed_at').eq('semester_id',sem.id).eq('slot',sl).eq('version',cur.version);if(r.error){pane.innerHTML=`<div class="card bad">${esc(r.error.message)}</div>`;return}sigs=r.data||[]}
+  const sm=new Map(sigs.map(x=>[x.student_id,x])),confirmed=sigs.length,total=(roster||[]).length;
+  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 각서</h3><div class="muted">교수자가 내용을 입력해 공개하면 학생이 휴대폰에서 읽고 손가락 서명 후 확인합니다. 내용을 바꾸면 새 버전이 되어 학생이 다시 서명해야 합니다.</div></div><span class="badge">현재 버전 ${cur.version||'-'}</span></div><label style="display:block;margin-top:12px">각서 내용<textarea id="pledgeContent" placeholder="학생들에게 확인받을 각서 내용을 입력하세요.">${esc(cur.content||'')}</textarea></label><label class="q" style="display:flex;gap:8px;align-items:center"><input id="pledgeOpen" type="checkbox" style="width:auto;min-height:auto" ${cur.is_open?'checked':''}> 학생에게 공개</label><div class="row"><button id="savePledge" class="primary">각서 저장</button><button id="downloadPledgeCsv">확인현황 CSV</button></div><div id="pledgeTeacherMsg" class="muted" style="margin-top:8px"></div></div><div class="card"><div class="row"><h3 class="section-title">확인 현황</h3><b>${confirmed}/${total}명 완료</b></div><div class="tablewrap"><table style="min-width:720px"><thead><tr><th>번호</th><th>이름</th><th>상태</th><th>확인시각</th><th>서명</th></tr></thead><tbody>${(roster||[]).map(st=>{const x=sm.get(st.id);return `<tr><td>${st.login_no}</td><td>${esc(st.name)}</td><td>${x?'<span class="ok">확인완료</span>':'-'}</td><td>${x?esc(new Date(x.confirmed_at).toLocaleString()):'-'}</td><td>${x?`<button class="smallbtn" data-sig="${st.id}">서명 보기</button>`:'-'}</td></tr>`}).join('')}</tbody></table></div></div>`;
+  $('#savePledge').onclick=async()=>{const content=$('#pledgeContent').value.trim(),isOpen=$('#pledgeOpen').checked;if(isOpen&&!content){msg($('#pledgeTeacherMsg'),'학생에게 공개하려면 각서 내용을 입력하세요.');return}if(cur.content&&content!==cur.content&&!confirm('각서 내용이 변경되었습니다. 저장하면 새 버전이 만들어지고 학생들은 새 각서에 다시 서명해야 합니다. 계속할까요?'))return;const {data,error}=await sb.rpc('lg_save_pledge',{p_semester_id:sem.id,p_slot:sl,p_content:content,p_is_open:isOpen});if(error||!data?.ok){msg($('#pledgeTeacherMsg'),data?.message||error?.message||'저장 실패');return}msg($('#pledgeTeacherMsg'),`각서 버전 ${data.version} 저장 완료`,true);setTimeout(renderTeacherPledge,500)};
+  pane.querySelectorAll('[data-sig]').forEach(b=>b.onclick=()=>{const x=sm.get(Number(b.dataset.sig));if(!x?.signature_data)return;const w=window.open('','_blank','width=760,height=420');if(!w)return alert('팝업 차단을 해제한 뒤 다시 눌러주세요.');w.document.write(`<html><head><title>서명</title></head><body style="font-family:sans-serif;padding:20px"><h3>학생 서명</h3><img src="${x.signature_data}" style="max-width:100%;border:1px solid #ccc"><p>${esc(new Date(x.confirmed_at).toLocaleString())}</p></body></html>`);w.document.close()});
+  $('#downloadPledgeCsv').onclick=()=>{const head=['번호','이름','각서버전','확인여부','확인시각'];const lines=[head.join(','),...(roster||[]).map(st=>{const x=sm.get(st.id);return [st.login_no,csvCell(st.name),cur.version||'',x?'Y':'N',x?csvCell(new Date(x.confirmed_at).toLocaleString()):''].join(',')})];const blob=new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${sem.name}_${courseLabel(teacherCourse)}_각서확인현황.csv`;a.click();URL.revokeObjectURL(a.href)};
 }
 
 async function renderTeacherGrades(){if(isChinese(teacherCourse))return renderTeacherChineseGrades();return renderTeacherLargeGrades()}
