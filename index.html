@@ -22,12 +22,12 @@
     <div id="loginCard" class="card">
       <h3 class="section-title">학생 로그인</h3>
       <div class="coursepick" id="studentCoursePick">
-        <button data-course="chinese1" class="active">중국어1</button>
-        <button data-course="chinese2">중국어2</button>
+        <button data-course="chinese1" class="active">소형1 · 중국어1</button>
+        <button data-course="chinese2">소형2 · 중국어2</button>
         <button data-course="large1">대형1</button>
         <button data-course="large2">대형2</button>
       </div>
-      <div class="grid g2"><label>고유번호<input id="sid" inputmode="numeric" placeholder="출석부 고유번호"></label><label>이름<input id="sname" placeholder="출석부 이름 그대로"></label></div>
+      <div class="grid g2"><label>학번<input id="sid" inputmode="numeric" placeholder="본인 학번"></label><label>이름<input id="sname" placeholder="출석부 이름 그대로"></label></div>
       <button id="loginBtn" class="primary" style="margin-top:10px">로그인</button><div id="loginMsg" class="muted" style="margin-top:8px"></div>
     </div>
     <div id="studentApp" class="hidden">
@@ -53,7 +53,7 @@
     </div>
     <div id="teacherApp" class="hidden">
       <div class="card row">
-        <div class="toolbar"><label>관리할 학기<select id="semesterSelect"></select></label><label>과목<select id="teacherCourseSelect"><option value="chinese1">중국어1</option><option value="chinese2">중국어2</option><option value="large1">대형1</option><option value="large2">대형2</option></select></label><span id="semesterBadge" class="badge"></span></div>
+        <div class="toolbar"><label>관리할 학기<select id="semesterSelect"></select></label><label>과목<select id="teacherCourseSelect"><option value="chinese1">소형1 · 중국어1</option><option value="chinese2">소형2 · 중국어2</option><option value="large1">대형1</option><option value="large2">대형2</option></select></label><span id="semesterBadge" class="badge"></span></div>
         <button id="teacherLogoutBtn">교수자 로그아웃</button>
       </div>
       <div class="tabs" id="ttabs">

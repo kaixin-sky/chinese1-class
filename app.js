@@ -1,14 +1,14 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const C=window.APP_CONFIG||{};
 const COURSES={
-  chinese1:{label:'중국어1',type:'chinese',prefix:'c1'},
-  chinese2:{label:'중국어2',type:'chinese',prefix:'c2'},
-  large1:{label:'대형1',type:'large',slot:'large1'},
-  large2:{label:'대형2',type:'large',slot:'large2'}
+  chinese1:{label:'소형1',defaultName:'중국어1',type:'chinese',prefix:'c1',slot:'small1'},
+  chinese2:{label:'소형2',defaultName:'중국어2',type:'chinese',prefix:'c2',slot:'small2'},
+  large1:{label:'대형1',defaultName:'대형1',type:'large',slot:'large1'},
+  large2:{label:'대형2',defaultName:'대형2',type:'large',slot:'large2'}
 };
 let sb=null, selectedStudentCourse='chinese1', student=null, studentToken=null;
 let semesters=[], teacherSemesterId=null, teacherCourse='chinese1', currentTeacherTab='semester';
-let largeNames={large1:'대형1',large2:'대형2'}, homeworkQrTimer=null, draftTimer=null, largeExamAccessCode='';
+let courseNames={chinese1:'중국어1',chinese2:'중국어2',large1:'대형1',large2:'대형2'}, homeworkQrTimer=null, draftTimer=null, largeExamAccessCode='';
 const configured=C.SUPABASE_URL&&!String(C.SUPABASE_URL).startsWith('PASTE_')&&C.SUPABASE_PUBLISHABLE_KEY&&!String(C.SUPABASE_PUBLISHABLE_KEY).startsWith('PASTE_');
 if(configured) sb=supabase.createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY); else $('#setupNotice').classList.remove('hidden');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -23,16 +23,24 @@ function clearMsg(el){if(el){el.textContent='';el.className='muted'}}
 function setMode(m){$('#studentSection').classList.toggle('hidden',m!=='s');$('#teacherSection').classList.toggle('hidden',m!=='t');$('#studentMode').classList.toggle('active',m==='s');$('#teacherMode').classList.toggle('active',m==='t');if(m==='t')tryRestoreTeacher()}
 $('#studentMode').onclick=()=>setMode('s');$('#teacherMode').onclick=()=>setMode('t');
 function baseUrl(){return new URL(location.origin+location.pathname)}
-function courseLabel(key){if(key==='large1'||key==='large2')return largeNames[key]||course(key).label;return course(key).label}
-function setStudentCourse(key){if(!COURSES[key])return;selectedStudentCourse=key;$$('#studentCoursePick button').forEach(b=>b.classList.toggle('active',b.dataset.course===key));$('#loginMsg').textContent=`${courseLabel(key)} 학생 로그인`;}
+function courseLabel(key){return courseNames[key]||course(key).defaultName||course(key).label}
+function courseDisplayText(key){const slot=course(key).label,actual=courseLabel(key);return actual&&actual!==slot?`${slot} · ${actual}`:slot}
+function setStudentCourse(key){if(!COURSES[key])return;selectedStudentCourse=key;$$('#studentCoursePick button').forEach(b=>b.classList.toggle('active',b.dataset.course===key));$('#loginMsg').textContent=`${courseDisplayText(key)} 학생 로그인`;}
 $$('#studentCoursePick button').forEach(b=>b.onclick=()=>setStudentCourse(b.dataset.course));
 
 async function loadPublicInfo(){
   if(!sb)return;
-  const {data:sem}=await sb.rpc('c1_get_active_semester');
-  let names=null;try{const r=await sb.rpc('lg_get_active_course_names');names=r.data}catch{}
-  if(names?.ok){largeNames.large1=names.large1||'대형1';largeNames.large2=names.large2||'대형2';}
-  const b1=$('#studentCoursePick [data-course="large1"]'),b2=$('#studentCoursePick [data-course="large2"]');if(b1)b1.textContent=largeNames.large1;if(b2)b2.textContent=largeNames.large2;
+  const [semr,smr,lgr]=await Promise.all([
+    sb.rpc('c1_get_active_semester'),
+    sb.rpc('sm_get_active_course_names'),
+    sb.rpc('lg_get_active_course_names')
+  ]);
+  const sem=semr.data,sm=smr.data,lg=lgr.data;
+  courseNames.chinese1=sm?.ok?(sm.small1||'중국어1'):'중국어1';
+  courseNames.chinese2=sm?.ok?(sm.small2||'중국어2'):'중국어2';
+  courseNames.large1=lg?.ok?(lg.large1||'대형1'):'대형1';
+  courseNames.large2=lg?.ok?(lg.large2||'대형2'):'대형2';
+  $$('#studentCoursePick button').forEach(b=>{b.textContent=courseDisplayText(b.dataset.course)});
   $('#publicSemesterLabel').textContent=sem?.ok?`${sem.name} · 4과목 통합관리`:'활성 학기가 없습니다.';
 }
 
@@ -47,7 +55,7 @@ async function restoreStudent(key){
   if(!x?.token)return;
   const rpc=isChinese(key)?`${cPrefix(key)}_student_me`:'lg_student_me';
   const {data,error}=await sb.rpc(rpc,{p_token:x.token});
-  if(!error&&data?.ok){student={id:data.id,login_no:data.login_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
+  if(!error&&data?.ok){student={id:data.id,login_no:data.login_no,student_no:data.student_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
 }
 function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();}
 async function renderStudentGroup(){
@@ -62,7 +70,7 @@ async function renderStudentGroup(){
 }
 function openStudentApp(){
   $('#loginCard').classList.add('hidden');$('#studentApp').classList.remove('hidden');
-  $('#who').textContent=`${student.login_no}번 ${student.name} · ${student.course_name||courseLabel(student.course)} · ${student.semester_name}`;
+  $('#who').textContent=`학번 ${student.student_no||'-'} · ${student.name} · ${student.course_name||courseLabel(student.course)} · ${student.semester_name}`;
   $('#sQuizTab').classList.toggle('hidden',!isChinese(student.course));
   $('#sPledgeTab').classList.toggle('hidden',isChinese(student.course));
   renderStudentGroup();
@@ -73,13 +81,13 @@ function openStudentApp(){
 }
 $('#loginBtn').onclick=async()=>{
   if(!sb)return;clearMsg($('#loginMsg'));
-  const iid=Number($('#sid').value),name=$('#sname').value.trim(),key=selectedStudentCourse;
-  if(!Number.isInteger(iid)||iid<1||!name){msg($('#loginMsg'),'번호와 이름을 입력하세요.');return}
+  const studentNo=$('#sid').value.trim(),name=$('#sname').value.trim(),key=selectedStudentCourse;
+  if(!studentNo||!name){msg($('#loginMsg'),'학번과 이름을 입력하세요.');return}
   let r;
-  if(isChinese(key))r=await sb.rpc(`${cPrefix(key)}_student_login`,{p_id:iid,p_name:name});
-  else r=await sb.rpc('lg_student_login',{p_slot:course(key).slot,p_id:iid,p_name:name});
-  if(r.error||!r.data?.ok){msg($('#loginMsg'),r.data?.message||r.error?.message||'번호와 이름이 일치하지 않습니다.');return}
-  student={id:r.data.id,login_no:r.data.login_no,name:r.data.name,semester_id:r.data.semester_id,semester_name:r.data.semester_name,course:key,course_name:r.data.course_name||courseLabel(key)};studentToken=r.data.token;saveStudentSession();openStudentApp();
+  if(isChinese(key))r=await sb.rpc(`${cPrefix(key)}_student_login_v2`,{p_student_no:studentNo,p_name:name});
+  else r=await sb.rpc('lg_student_login_v2',{p_slot:course(key).slot,p_student_no:studentNo,p_name:name});
+  if(r.error||!r.data?.ok){msg($('#loginMsg'),r.data?.message||r.error?.message||'학번과 이름이 일치하지 않습니다.');return}
+  student={id:r.data.id,login_no:r.data.login_no,student_no:r.data.student_no,name:r.data.name,semester_id:r.data.semester_id,semester_name:r.data.semester_name,course:key,course_name:r.data.course_name||courseLabel(key)};studentToken=r.data.token;saveStudentSession();openStudentApp();
 };
 $('#logoutBtn').onclick=async()=>{if(sb&&studentToken){const rpc=isChinese(student.course)?`${cPrefix(student.course)}_student_logout`:'lg_student_logout';await sb.rpc(rpc,{p_token:studentToken})}clearStudentSession();$('#studentApp').classList.add('hidden');$('#loginCard').classList.remove('hidden')};
 $$('#stabs button').forEach(b=>b.onclick=()=>switchStudentTab(b.dataset.tab));
@@ -187,26 +195,140 @@ async function loadSemesters(){const {data,error}=await sb.from('c1_semesters').
 function updateSemesterBadge(){const sem=selectedSemester();$('#semesterBadge').textContent=sem?(sem.is_active?'현재 학생용 활성 학기':'과거/비활성 학기'):''}
 $('#semesterSelect').onchange=async()=>{teacherSemesterId=Number($('#semesterSelect').value);updateSemesterBadge();await loadTeacherCourseNames();renderTeacherTab(currentTeacherTab)};
 $('#teacherCourseSelect').onchange=async()=>{teacherCourse=$('#teacherCourseSelect').value;clearInterval(homeworkQrTimer);homeworkQrTimer=null;await loadTeacherCourseNames();applyTeacherCourseTabs();if((isChinese(teacherCourse)&&(currentTeacherTab==='midterm'||currentTeacherTab==='pledge'))||(!isChinese(teacherCourse)&&currentTeacherTab==='quiz'))currentTeacherTab='semester';switchTeacherPane(currentTeacherTab);renderTeacherTab(currentTeacherTab)};
-async function loadTeacherCourseNames(){const sem=selectedSemester();if(!sem)return;const {data}=await sb.from('lg_course_settings').select('slot,display_name').eq('semester_id',sem.id);(data||[]).forEach(x=>largeNames[x.slot]=x.display_name);const sel=$('#teacherCourseSelect');[...sel.options].forEach(o=>{if(o.value==='large1'||o.value==='large2')o.textContent=`${COURSES[o.value].label} · ${largeNames[o.value]||COURSES[o.value].label}`});const b1=$('#studentCoursePick [data-course="large1"]'),b2=$('#studentCoursePick [data-course="large2"]');if(b1)b1.textContent=largeNames.large1;if(b2)b2.textContent=largeNames.large2}
+async function loadTeacherCourseNames(){
+  const sem=selectedSemester();if(!sem)return;
+  courseNames.chinese1='중국어1';courseNames.chinese2='중국어2';courseNames.large1='대형1';courseNames.large2='대형2';
+  const [smr,lgr]=await Promise.all([
+    sb.from('sm_course_settings').select('slot,display_name').eq('semester_id',sem.id),
+    sb.from('lg_course_settings').select('slot,display_name').eq('semester_id',sem.id)
+  ]);
+  (smr.data||[]).forEach(x=>{if(x.slot==='small1')courseNames.chinese1=x.display_name;if(x.slot==='small2')courseNames.chinese2=x.display_name});
+  (lgr.data||[]).forEach(x=>{if(x.slot==='large1'||x.slot==='large2')courseNames[x.slot]=x.display_name});
+  const sel=$('#teacherCourseSelect');
+  [...sel.options].forEach(o=>{o.textContent=courseDisplayText(o.value)});
+}
 function applyTeacherCourseTabs(){$('#tQuizTab').classList.toggle('hidden',!isChinese(teacherCourse));$('#tMidtermTab').classList.toggle('hidden',isChinese(teacherCourse));$('#tPledgeTab').classList.toggle('hidden',isChinese(teacherCourse))}
 function switchTeacherPane(tab){$$('#ttabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.tpane').forEach(x=>x.classList.add('hidden'));const p=$('#t'+tab);if(p)p.classList.remove('hidden')}
 $$('#ttabs button').forEach(b=>b.onclick=()=>{currentTeacherTab=b.dataset.tab;clearInterval(homeworkQrTimer);homeworkQrTimer=null;switchTeacherPane(currentTeacherTab);renderTeacherTab(currentTeacherTab)});
 function renderTeacherTab(tab){if(!selectedSemester())return;const map={semester:renderTeacherSemester,qr:renderTeacherQR,attendance:renderTeacherAttendance,quiz:renderTeacherQuiz,midterm:renderTeacherMidterm,final:renderTeacherFinal,homework:renderTeacherHomework,pledge:renderTeacherPledge,grades:renderTeacherGrades};if(map[tab])map[tab]()}
 
-async function getRoster(){const sem=selectedSemester();if(isChinese(teacherCourse)){const p=cPrefix(teacherCourse);const {data,error}=await sb.from(`${p}_students`).select('id,login_no,name').eq('semester_id',sem.id).order('login_no');return {data:data||[],error}}const {data,error}=await sb.from('lg_students').select('id,login_no,name,group_no').eq('semester_id',sem.id).eq('slot',course(teacherCourse).slot).order('login_no');return {data:data||[],error}}
-function parseRosterText(text){return text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{const parts=line.split(/[\t,]/).map(x=>x.trim()).filter(Boolean);if(parts.length>1&&/^\d+$/.test(parts[0]))return parts.slice(1).join(' ');return line.replace(/^\d+[.)\-\s]+/,'').trim()}).filter(Boolean)}
+async function getRoster(){
+  const sem=selectedSemester();
+  if(isChinese(teacherCourse)){
+    const p=cPrefix(teacherCourse);
+    const {data,error}=await sb.from(`${p}_students`).select('id,login_no,student_no,name').eq('semester_id',sem.id).order('login_no');
+    return {data:data||[],error};
+  }
+  const {data,error}=await sb.from('lg_students').select('id,login_no,student_no,name,group_no').eq('semester_id',sem.id).eq('slot',course(teacherCourse).slot).order('login_no');
+  return {data:data||[],error};
+}
+
+function parseRosterText(text){
+  const out=[];
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.trim();if(!line)continue;
+    if(/학번/.test(line)&&/이름/.test(line))continue;
+    let student_no='',name='';
+    const parts=line.split(/[\t,]/).map(x=>x.trim().replace(/^"|"$/g,'')).filter(Boolean);
+    if(parts.length>=2){
+      const idx=parts.findIndex(x=>/^\d{7,12}$/.test(x));
+      if(idx>=0&&idx<parts.length-1){
+        student_no=parts[idx];
+        name=parts.slice(idx+1).join(' ').trim();
+      }
+    }
+    if(!student_no){
+      const m=line.match(/^\s*(\d{7,12})\s+(.+?)\s*$/);
+      if(m){student_no=m[1];name=m[2].trim()}
+    }
+    if(student_no&&name)out.push({student_no,name});
+  }
+  return out;
+}
+
 async function renderTeacherSemester(){
-  const pane=$('#tsemester'),sem=selectedSemester(),{data:roster,error}=await getRoster();if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
-  let courseNameBlock='';if(!isChinese(teacherCourse))courseNameBlock=`<div class="card"><h3 class="section-title">${esc(COURSES[teacherCourse].label)} 실제 과목명</h3><div class="grid g2"><label>이번 학기 과목명<input id="largeDisplayName" value="${esc(largeNames[teacherCourse]||COURSES[teacherCourse].label)}"></label><div style="display:flex;align-items:end"><button id="saveCourseName" class="primary">과목명 저장</button></div></div><div class="muted" style="margin-top:8px">프로그램 슬롯은 ${esc(COURSES[teacherCourse].label)}로 유지되고, 실제 과목명은 학기마다 바꿀 수 있습니다.</div></div>`;
-  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">학기 관리</h3><div class="muted">새 학기를 만들면 중국어1·중국어2·대형1·대형2가 같은 학기 아래 자동 준비됩니다.</div></div><button id="makeActive" ${sem.is_active?'disabled':''}>${sem.is_active?'현재 활성 학기':'이 학기를 학생용으로 활성화'}</button></div><div class="grid g2" style="margin-top:12px"><label>새 학기 이름<input id="newSemesterName" placeholder="예: 2027-1학기"></label><div style="display:flex;align-items:end"><button id="createSemester" class="primary">새 학기 만들기</button></div></div><div id="semesterMsg" class="muted" style="margin-top:8px"></div></div>${courseNameBlock}<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 학생 명단</h3><div class="muted">현재 ${roster.length}명 · 고유번호는 이 과목/학기 안에서 1부터 사용</div></div><input id="rosterSearch" style="max-width:260px" placeholder="번호 또는 이름 검색"></div><div id="rosterTable" style="margin-top:10px"></div></div><div class="card"><h3 class="section-title">명단 전체 입력/교체</h3><div class="notice">학생 활동 기록이 생긴 뒤에는 안전을 위해 전체교체가 차단됩니다.</div><textarea id="rosterPaste" placeholder="학생 이름을 한 줄에 한 명씩 붙여넣으세요.\n또는 1,홍길동 / 2,김영희 형태도 가능합니다."></textarea><div class="row"><label style="max-width:340px">TXT/CSV 불러오기<input id="rosterFile" type="file" accept=".txt,.csv,text/plain,text/csv"></label><button id="replaceRoster" class="primary">명단 전체교체</button></div><div id="rosterMsg" class="muted" style="margin-top:8px"></div></div><div class="card"><h3 class="section-title">학생 한 명 추가</h3><div class="grid g3"><label>고유번호<input id="addNo" type="number" min="1"></label><label>이름<input id="addName"></label><div style="display:flex;align-items:end"><button id="addStudent" class="primary">학생 추가</button></div></div></div>`;
-  const draw=()=>{const q=$('#rosterSearch').value.trim();const arr=roster.filter(s=>!q||String(s.login_no).includes(q)||s.name.includes(q)||(!isChinese(teacherCourse)&&String(s.group_no??'').includes(q)));const large=!isChinese(teacherCourse);$('#rosterTable').innerHTML=`<div class="tablewrap"><table style="min-width:${large?'650':'520'}px"><thead><tr><th>번호</th><th class="left">이름</th>${large?'<th>조</th>':''}<th>수정</th><th>삭제</th></tr></thead><tbody>${arr.map(s=>`<tr><td>${s.login_no}</td><td class="left"><input data-name-id="${s.id}" value="${esc(s.name)}"></td>${large?`<td><input data-group-id="${s.id}" type="number" min="1" max="99" step="1" value="${s.group_no??''}" placeholder="조" style="max-width:90px"></td>`:''}<td><button class="smallbtn" data-save-student="${s.id}">${large?'이름·조 저장':'이름 저장'}</button></td><td><button class="smallbtn danger" data-delete-student="${s.id}">삭제</button></td></tr>`).join('')}</tbody></table></div>`;$('#rosterTable').querySelectorAll('[data-save-student]').forEach(b=>b.onclick=async()=>{const id=Number(b.dataset.saveStudent),name=$(`[data-name-id="${id}"]`).value.trim();let r;if(isChinese(teacherCourse))r=await sb.from(`${cPrefix(teacherCourse)}_students`).update({name}).eq('id',id);else{const raw=$(`[data-group-id="${id}"]`).value.trim();let group_no=null;if(raw!==''){group_no=Number(raw);if(!Number.isInteger(group_no)||group_no<1||group_no>99){alert('조 번호는 1~99 사이의 숫자로 입력하세요.');return}}r=await sb.from('lg_students').update({name,group_no}).eq('id',id)}if(r.error)alert(r.error.message);else renderTeacherSemester()});$('#rosterTable').querySelectorAll('[data-delete-student]').forEach(b=>b.onclick=async()=>{if(!confirm('이 학생을 삭제할까요? 기록이 있으면 삭제되지 않습니다.'))return;const id=Number(b.dataset.deleteStudent);const rpc=isChinese(teacherCourse)?`${cPrefix(teacherCourse)}_delete_student`:'lg_delete_student';const {error}=await sb.rpc(rpc,{p_student_id:id});if(error)alert(error.message);else renderTeacherSemester()})};
+  const pane=$('#tsemester'),sem=selectedSemester(),{data:roster,error}=await getRoster();
+  if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
+
+  const courseNameBlock=`<div class="card"><h3 class="section-title">${esc(course(teacherCourse).label)} 실제 과목명</h3><div class="grid g2"><label>이번 학기 과목명<input id="courseDisplayName" value="${esc(courseLabel(teacherCourse))}"></label><div style="display:flex;align-items:end"><button id="saveCourseName" class="primary">과목명 저장</button></div></div><div class="muted" style="margin-top:8px">프로그램 슬롯은 ${esc(course(teacherCourse).label)}로 유지되고, 실제 과목명은 학기마다 바꿀 수 있습니다.</div></div>`;
+
+  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">학기 관리</h3><div class="muted">새 학기를 만들면 소형1·소형2·대형1·대형2가 같은 학기 아래 자동 준비됩니다.</div></div><button id="makeActive" ${sem.is_active?'disabled':''}>${sem.is_active?'현재 활성 학기':'이 학기를 학생용으로 활성화'}</button></div><div class="grid g2" style="margin-top:12px"><label>새 학기 이름<input id="newSemesterName" placeholder="예: 2027-1학기"></label><div style="display:flex;align-items:end"><button id="createSemester" class="primary">새 학기 만들기</button></div></div><div id="semesterMsg" class="muted" style="margin-top:8px"></div></div>
+  ${courseNameBlock}
+  <div class="card"><div class="row"><div><h3 class="section-title">${esc(courseDisplayText(teacherCourse))} 학생 명단</h3><div class="muted">현재 ${roster.length}명 · 학생 로그인은 <b>학번 + 이름</b>을 사용합니다.</div></div><input id="rosterSearch" style="max-width:280px" placeholder="번호·학번·이름 검색"></div><div id="rosterTable" style="margin-top:10px"></div></div>
+  <div class="card"><h3 class="section-title">명단 전체 입력/교체</h3><div class="notice">앞으로 명단은 <b>학번 + 이름</b>으로 입력하세요. 예: <b>202600018,이시은</b>. 2주차 이후 학생 활동 기록이 생기면 안전을 위해 전체교체가 차단됩니다.</div><textarea id="rosterPaste" placeholder="202600018,이시은\n202200002,금성현\n\nCSV의 '고유번호,학번,이름' 형식도 읽을 수 있습니다."></textarea><div class="row"><label style="max-width:340px">TXT/CSV 불러오기<input id="rosterFile" type="file" accept=".txt,.csv,text/plain,text/csv"></label><button id="replaceRoster" class="primary">명단 전체교체</button></div><div id="rosterMsg" class="muted" style="margin-top:8px"></div></div>
+  <div class="card"><h3 class="section-title">학생 한 명 추가</h3><div class="grid g3"><label>학번<input id="addStudentNo" inputmode="numeric" placeholder="예: 202600018"></label><label>이름<input id="addName"></label><div style="display:flex;align-items:end"><button id="addStudent" class="primary">학생 추가</button></div></div></div>`;
+
+  const draw=()=>{
+    const q=$('#rosterSearch').value.trim();
+    const arr=roster.filter(s=>!q||String(s.login_no).includes(q)||String(s.student_no||'').includes(q)||s.name.includes(q)||(!isChinese(teacherCourse)&&String(s.group_no??'').includes(q)));
+    const large=!isChinese(teacherCourse);
+    $('#rosterTable').innerHTML=`<div class="tablewrap"><table style="min-width:${large?'780':'670'}px"><thead><tr><th>번호</th><th>학번</th><th class="left">이름</th>${large?'<th>조</th>':''}<th>수정</th><th>삭제</th></tr></thead><tbody>${arr.map(s=>`<tr><td>${s.login_no}</td><td><input data-studentno-id="${s.id}" value="${esc(s.student_no||'')}" inputmode="numeric" style="min-width:120px"></td><td class="left"><input data-name-id="${s.id}" value="${esc(s.name)}"></td>${large?`<td><input data-group-id="${s.id}" type="number" min="1" max="99" step="1" value="${s.group_no??''}" placeholder="조" style="max-width:90px"></td>`:''}<td><button class="smallbtn" data-save-student="${s.id}">${large?'학번·이름·조 저장':'학번·이름 저장'}</button></td><td><button class="smallbtn danger" data-delete-student="${s.id}">삭제</button></td></tr>`).join('')}</tbody></table></div>`;
+
+    $('#rosterTable').querySelectorAll('[data-save-student]').forEach(b=>b.onclick=async()=>{
+      const id=Number(b.dataset.saveStudent),student_no=$(`[data-studentno-id="${id}"]`).value.trim(),name=$(`[data-name-id="${id}"]`).value.trim();
+      if(!student_no||!name){alert('학번과 이름을 입력하세요.');return}
+      let r;
+      if(isChinese(teacherCourse))r=await sb.from(`${cPrefix(teacherCourse)}_students`).update({student_no,name}).eq('id',id);
+      else{
+        const raw=$(`[data-group-id="${id}"]`).value.trim();let group_no=null;
+        if(raw!==''){group_no=Number(raw);if(!Number.isInteger(group_no)||group_no<1||group_no>99){alert('조 번호는 1~99 사이의 숫자로 입력하세요.');return}}
+        r=await sb.from('lg_students').update({student_no,name,group_no}).eq('id',id);
+      }
+      if(r.error)alert(r.error.message);else renderTeacherSemester();
+    });
+
+    $('#rosterTable').querySelectorAll('[data-delete-student]').forEach(b=>b.onclick=async()=>{
+      if(!confirm('이 학생을 삭제할까요? 기록이 있으면 삭제되지 않습니다.'))return;
+      const id=Number(b.dataset.deleteStudent),rpc=isChinese(teacherCourse)?`${cPrefix(teacherCourse)}_delete_student`:'lg_delete_student';
+      const {error}=await sb.rpc(rpc,{p_student_id:id});
+      if(error)alert(error.message);else renderTeacherSemester();
+    });
+  };
   $('#rosterSearch').oninput=draw;draw();
-  $('#createSemester').onclick=async()=>{const name=$('#newSemesterName').value.trim();if(!name){msg($('#semesterMsg'),'새 학기 이름을 입력하세요.');return}const {data,error}=await sb.rpc('c1_create_semester',{p_name:name,p_make_active:false});if(error)msg($('#semesterMsg'),error.message);else{msg($('#semesterMsg'),'새 학기를 만들었습니다.',true);await loadSemesters();renderTeacherSemester()}};
-  $('#makeActive').onclick=async()=>{if(!confirm(`${sem.name}을 학생용 활성 학기로 바꿀까요? 기존 학생 로그인 세션은 종료됩니다.`))return;const {error}=await sb.rpc('c1_set_active_semester',{p_semester_id:sem.id});if(error)alert(error.message);else{await loadSemesters();renderTeacherSemester();loadPublicInfo()}};
-  if($('#saveCourseName'))$('#saveCourseName').onclick=async()=>{const nm=$('#largeDisplayName').value.trim();const {error}=await sb.rpc('lg_set_course_name',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_display_name:nm});if(error)alert(error.message);else{largeNames[teacherCourse]=nm||COURSES[teacherCourse].label;await loadTeacherCourseNames();renderTeacherSemester()}};
+
+  $('#createSemester').onclick=async()=>{
+    const name=$('#newSemesterName').value.trim();if(!name){msg($('#semesterMsg'),'새 학기 이름을 입력하세요.');return}
+    const {data,error}=await sb.rpc('c1_create_semester',{p_name:name,p_make_active:false});
+    if(error)msg($('#semesterMsg'),error.message);else{msg($('#semesterMsg'),'새 학기를 만들었습니다.',true);await loadSemesters();renderTeacherSemester()}
+  };
+
+  $('#makeActive').onclick=async()=>{
+    if(!confirm(`${sem.name}을 학생용 활성 학기로 바꿀까요? 기존 학생 로그인 세션은 종료됩니다.`))return;
+    const {error}=await sb.rpc('c1_set_active_semester',{p_semester_id:sem.id});
+    if(error)alert(error.message);else{await loadSemesters();renderTeacherSemester();loadPublicInfo()}
+  };
+
+  $('#saveCourseName').onclick=async()=>{
+    const nm=$('#courseDisplayName').value.trim();
+    let r;
+    if(isChinese(teacherCourse))r=await sb.rpc('sm_set_course_name',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_display_name:nm});
+    else r=await sb.rpc('lg_set_course_name',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_display_name:nm});
+    if(r.error||r.data?.ok===false)alert(r.data?.message||r.error?.message||'과목명 저장 실패');
+    else{courseNames[teacherCourse]=r.data?.display_name||nm||course(teacherCourse).defaultName;await loadTeacherCourseNames();renderTeacherSemester();if(sem.is_active)loadPublicInfo()}
+  };
+
   $('#rosterFile').onchange=async e=>{const f=e.target.files?.[0];if(f)$('#rosterPaste').value=await f.text()};
-  $('#replaceRoster').onclick=async()=>{const names=parseRosterText($('#rosterPaste').value);if(!names.length){msg($('#rosterMsg'),'명단이 비어 있습니다.');return}if(!confirm(`${names.length}명으로 전체교체할까요?`))return;let r;if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_replace_roster`,{p_semester_id:sem.id,p_names:names});else r=await sb.rpc('lg_replace_roster',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_names:names});if(r.error||!r.data?.ok){msg($('#rosterMsg'),r.data?.message||r.error?.message||'명단 교체 실패');return}msg($('#rosterMsg'),`${r.data.count}명으로 저장했습니다.`,true);renderTeacherSemester()};
-  $('#addStudent').onclick=async()=>{const login_no=Number($('#addNo').value),name=$('#addName').value.trim();if(!Number.isInteger(login_no)||login_no<1||!name)return alert('번호와 이름을 입력하세요.');let r;if(isChinese(teacherCourse))r=await sb.from(`${cPrefix(teacherCourse)}_students`).insert({semester_id:sem.id,login_no,name});else r=await sb.rpc('lg_add_student',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_login_no:login_no,p_name:name});if(r.error)alert(r.error.message);else renderTeacherSemester()};
+
+  $('#replaceRoster').onclick=async()=>{
+    const rows=parseRosterText($('#rosterPaste').value);
+    if(!rows.length){msg($('#rosterMsg'),'학번과 이름을 읽을 수 없습니다. 예: 202600018,이시은');return}
+    if(!confirm(`${rows.length}명으로 전체교체할까요?`))return;
+    const p_student_nos=rows.map(x=>x.student_no),p_names=rows.map(x=>x.name);
+    let r;
+    if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_replace_roster_v2`,{p_semester_id:sem.id,p_student_nos,p_names});
+    else r=await sb.rpc('lg_replace_roster_v2',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_student_nos,p_names});
+    if(r.error||!r.data?.ok){msg($('#rosterMsg'),r.data?.message||r.error?.message||'명단 교체 실패');return}
+    msg($('#rosterMsg'),`${r.data.count}명으로 저장했습니다.`,true);renderTeacherSemester();
+  };
+
+  $('#addStudent').onclick=async()=>{
+    const student_no=$('#addStudentNo').value.trim(),name=$('#addName').value.trim();
+    if(!student_no||!name)return alert('학번과 이름을 입력하세요.');
+    let r;
+    if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_add_student_v2`,{p_semester_id:sem.id,p_student_no:student_no,p_name:name});
+    else r=await sb.rpc('lg_add_student_v2',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_student_no:student_no,p_name:name});
+    if(r.error||!r.data?.ok)alert(r.data?.message||r.error?.message||'학생 추가 실패');else renderTeacherSemester();
+  };
 }
 
 function renderTeacherQR(){const pane=$('#tqr'),sem=selectedSemester(),url=baseUrl();url.searchParams.set('course',teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 학생접속 QR</h3><div class="muted">이 QR은 같은 웹주소를 사용합니다. 학생은 QR을 찍으면 ${esc(courseLabel(teacherCourse))}가 자동 선택됩니다.</div><div id="studentQR" class="qrbox" style="margin-top:12px"></div><div class="muted" style="word-break:break-all;margin-top:8px">${esc(url.href)}</div>${sem.is_active?'':'<div class="warn" style="margin-top:8px">현재 선택한 학기는 학생용 활성 학기가 아닙니다.</div>'}</div>`;new QRCode($('#studentQR'),{text:url.href,width:220,height:220})}
@@ -445,5 +567,5 @@ function saveCsv(lines,name){const blob=new Blob(['\ufeff'+lines.join('\n')],{ty
   await loadPublicInfo();
   if(COURSES[qcourse])setStudentCourse(qcourse);
   await restoreStudent(selectedStudentCourse);
-  if(!student&&(u.searchParams.get('hwtoken')||u.searchParams.get('homework_week')))$('#loginMsg').textContent='QR 인증을 위해 먼저 번호와 이름으로 로그인하세요. 동적 QR은 매우 짧게 유효하므로 대형강의 학생은 미리 휴대폰 로그인을 해두는 것이 좋습니다.';
+  if(!student&&(u.searchParams.get('hwtoken')||u.searchParams.get('homework_week')))$('#loginMsg').textContent='QR 인증을 위해 먼저 학번과 이름으로 로그인하세요. 동적 QR은 매우 짧게 유효하므로 대형강의 학생은 미리 휴대폰 로그인을 해두는 것이 좋습니다.';
 })();
