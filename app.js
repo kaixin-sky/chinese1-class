@@ -212,12 +212,171 @@ async function renderTeacherSemester(){
 function renderTeacherQR(){const pane=$('#tqr'),sem=selectedSemester(),url=baseUrl();url.searchParams.set('course',teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 학생접속 QR</h3><div class="muted">이 QR은 같은 웹주소를 사용합니다. 학생은 QR을 찍으면 ${esc(courseLabel(teacherCourse))}가 자동 선택됩니다.</div><div id="studentQR" class="qrbox" style="margin-top:12px"></div><div class="muted" style="word-break:break-all;margin-top:8px">${esc(url.href)}</div>${sem.is_active?'':'<div class="warn" style="margin-top:8px">현재 선택한 학기는 학생용 활성 학기가 아닙니다.</div>'}</div>`;new QRCode($('#studentQR'),{text:url.href,width:220,height:220})}
 
 async function renderTeacherAttendance(){
-  const pane=$('#tattendance'),sem=selectedSemester();pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 출석 설정</h3><label style="max-width:220px;display:block">주차<select id="taWeek">${weekOpts()}</select></label><div id="taBody" style="margin-top:10px"></div></div>`;
-  const load=async()=>{const w=Number($('#taWeek').value);let week,words,recs,roster;if(isChinese(teacherCourse)){const p=cPrefix(teacherCourse);[{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([sb.from(`${p}_attendance_weeks`).select('*').eq('semester_id',sem.id).eq('week',w).maybeSingle(),sb.from(`${p}_attendance_words`).select('*').eq('semester_id',sem.id).eq('week',w).order('period'),sb.from(`${p}_attendance_records`).select('*').eq('semester_id',sem.id).eq('week',w),sb.from(`${p}_students`).select('id,login_no,name').eq('semester_id',sem.id).order('login_no')])}else{const sl=course(teacherCourse).slot;[{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([sb.from('lg_attendance_weeks').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w).maybeSingle(),sb.from('lg_attendance_words').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w).order('period'),sb.from('lg_attendance_records').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w),sb.from('lg_students').select('id,login_no,name').eq('semester_id',sem.id).eq('slot',sl).order('login_no')])}const by=new Map((recs||[]).map(r=>[`${r.student_id}-${r.period}`,r]));const status=(r,finalized)=>{if(!r)return finalized?'결석':'미확인';if(r.start_ok&&r.end_ok)return'출석';if(!r.start_ok&&r.end_ok)return'지각';if(r.start_ok&&!r.end_ok)return finalized?'조퇴':'시작확인';return finalized?'결석':'미확인'};const auto=w===1;$('#taBody').innerHTML=`${auto?'<div class="notice" style="margin-bottom:10px"><b>1주차 자동 출석 고정</b><br>명단이 2주차에 확정되므로 모든 학생의 1주차 1·2·3교시는 자동으로 출석 처리됩니다. 출석 단어 입력과 주차 확정 작업이 필요하지 않습니다.</div>':''}<div class="grid g3">${[1,2,3].map(i=>{const x=(words||[]).find(a=>a.period===i)||{};return `<div class="q"><b>${i}교시</b><label>시작 단어<input data-start="${i}" value="${esc(x.start_word||'')}" ${auto?'disabled':''}></label><label>종료 단어<input data-end="${i}" value="${esc(x.end_word||'')}" ${auto?'disabled':''}></label></div>`}).join('')}</div><div class="row"><button id="saveWords" class="primary" ${auto?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div><div id="taMsg" class="muted" style="margin-top:8px"></div><div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b></div><div class="tablewrap"><table><thead><tr><th>번호</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th></tr></thead><tbody>${(roster||[]).map(s=>`<tr><td>${s.login_no}</td><td>${esc(s.name)}</td>${[1,2,3].map(p=>`<td>${status(by.get(`${s.id}-${p}`),week?.finalized)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const pane=$('#tattendance'),sem=selectedSemester();
+  pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 출석 설정</h3><label style="max-width:220px;display:block">주차<select id="taWeek">${weekOpts()}</select></label><div id="taBody" style="margin-top:10px"></div></div>`;
+
+  const load=async()=>{
+    const w=Number($('#taWeek').value);
+    let week,words,recs,roster;
+    if(isChinese(teacherCourse)){
+      const p=cPrefix(teacherCourse);
+      [{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([
+        sb.from(`${p}_attendance_weeks`).select('*').eq('semester_id',sem.id).eq('week',w).maybeSingle(),
+        sb.from(`${p}_attendance_words`).select('*').eq('semester_id',sem.id).eq('week',w).order('period'),
+        sb.from(`${p}_attendance_records`).select('*').eq('semester_id',sem.id).eq('week',w),
+        sb.from(`${p}_students`).select('id,login_no,name').eq('semester_id',sem.id).order('login_no')
+      ]);
+    }else{
+      const sl=course(teacherCourse).slot;
+      [{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([
+        sb.from('lg_attendance_weeks').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w).maybeSingle(),
+        sb.from('lg_attendance_words').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w).order('period'),
+        sb.from('lg_attendance_records').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w),
+        sb.from('lg_students').select('id,login_no,name').eq('semester_id',sem.id).eq('slot',sl).order('login_no')
+      ]);
+    }
+
+    const by=new Map((recs||[]).map(r=>[`${r.student_id}-${r.period}`,r]));
+    const status=(r,finalized)=>{
+      if(!r)return finalized?'결석':'미확인';
+      if(r.start_ok&&r.end_ok)return'출석';
+      if(!r.start_ok&&r.end_ok)return'지각';
+      if(r.start_ok&&!r.end_ok)return finalized?'조퇴':'시작확인';
+      return finalized?'결석':'미확인';
+    };
+    const statusKey=(r,finalized)=>{
+      const s=status(r,finalized);
+      if(s==='출석')return'present';
+      if(s==='지각')return'late';
+      if(s==='조퇴')return'early';
+      if(s==='결석')return'absent';
+      return'absent';
+    };
+    const optionHtml=(r,finalized)=>{
+      const cur=statusKey(r,finalized);
+      return [
+        ['present','출석'],
+        ['late','지각'],
+        ['early','조퇴'],
+        ['absent','결석']
+      ].map(([v,t])=>`<option value="${v}" ${cur===v?'selected':''}>${t}</option>`).join('');
+    };
+
+    const auto=w===1;
+    const canEdit=!auto&&!!week?.finalized;
+
+    $('#taBody').innerHTML=`
+      ${auto?'<div class="notice" style="margin-bottom:10px"><b>1주차 자동 출석 고정</b><br>명단이 2주차에 확정되므로 모든 학생의 1주차 1·2·3교시는 자동으로 출석 처리됩니다. 출석 단어 입력과 주차 확정 작업이 필요하지 않습니다.</div>':''}
+      ${!auto&&week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교수자 출석 수정 가능</b><br>학생별 1·2·3교시를 출석·지각·조퇴·결석으로 바꾼 뒤 오른쪽의 <b>수정 저장</b>을 누르세요.</div>':''}
+      ${!auto&&!week?.finalized?'<div class="muted" style="margin-bottom:10px">학생별 출석 수정은 먼저 이 주차의 출석을 확정한 뒤 사용할 수 있습니다.</div>':''}
+      <div class="grid g3">
+        ${[1,2,3].map(i=>{
+          const x=(words||[]).find(a=>a.period===i)||{};
+          return `<div class="q"><b>${i}교시</b><label>시작 단어<input data-start="${i}" value="${esc(x.start_word||'')}" ${auto?'disabled':''}></label><label>종료 단어<input data-end="${i}" value="${esc(x.end_word||'')}" ${auto?'disabled':''}></label></div>`;
+        }).join('')}
+      </div>
+      <div class="row">
+        <button id="saveWords" class="primary" ${auto?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button>
+        <button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button>
+      </div>
+      <div id="taMsg" class="muted" style="margin-top:8px"></div>
+      <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>번호</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${canEdit?'<th>수정</th>':''}</tr></thead>
+          <tbody>
+            ${(roster||[]).map(s=>`<tr>
+              <td>${s.login_no}</td>
+              <td>${esc(s.name)}</td>
+              ${[1,2,3].map(p=>{
+                const r=by.get(`${s.id}-${p}`);
+                return canEdit
+                  ? `<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`
+                  : `<td>${status(r,week?.finalized)}</td>`;
+              }).join('')}
+              ${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
     if(auto)return;
-    $('#saveWords').onclick=async()=>{const rows=[1,2,3].map(p=>({semester_id:sem.id,...(!isChinese(teacherCourse)?{slot:course(teacherCourse).slot}:{}),week:w,period:p,start_word:$(`[data-start="${p}"]`).value.trim(),end_word:$(`[data-end="${p}"]`).value.trim()}));const table=isChinese(teacherCourse)?`${cPrefix(teacherCourse)}_attendance_words`:'lg_attendance_words';const conflict=isChinese(teacherCourse)?'semester_id,week,period':'semester_id,slot,week,period';const {error}=await sb.from(table).upsert(rows,{onConflict:conflict});if(error)msg($('#taMsg'),error.message);else msg($('#taMsg'),'출석 단어 6개를 저장했습니다.',true)};
-    $('#finalizeWeek').onclick=async()=>{if(!week?.finalized&&!confirm(`${w}주차 출석을 확정할까요? 미입력 교시는 결석으로 기록됩니다.`))return;let r;if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized});else r=await sb.rpc('lg_set_attendance_week_finalized',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized});if(r.error)alert(r.error.message);else load()};
-  };$('#taWeek').onchange=load;load();
+
+    $('#saveWords').onclick=async()=>{
+      const rows=[1,2,3].map(p=>({
+        semester_id:sem.id,
+        ...(!isChinese(teacherCourse)?{slot:course(teacherCourse).slot}:{}),
+        week:w,
+        period:p,
+        start_word:$(`[data-start="${p}"]`).value.trim(),
+        end_word:$(`[data-end="${p}"]`).value.trim()
+      }));
+      const table=isChinese(teacherCourse)?`${cPrefix(teacherCourse)}_attendance_words`:'lg_attendance_words';
+      const conflict=isChinese(teacherCourse)?'semester_id,week,period':'semester_id,slot,week,period';
+      const {error}=await sb.from(table).upsert(rows,{onConflict:conflict});
+      if(error)msg($('#taMsg'),error.message);
+      else msg($('#taMsg'),'출석 단어 6개를 저장했습니다.',true);
+    };
+
+    $('#finalizeWeek').onclick=async()=>{
+      if(!week?.finalized&&!confirm(`${w}주차 출석을 확정할까요? 미입력 교시는 결석으로 기록됩니다.`))return;
+      let r;
+      if(isChinese(teacherCourse)){
+        r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{
+          p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized
+        });
+      }else{
+        r=await sb.rpc('lg_set_attendance_week_finalized',{
+          p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized
+        });
+      }
+      if(r.error)alert(r.error.message);else load();
+    };
+
+    if(canEdit){
+      $('#taBody').querySelectorAll('[data-save-att]').forEach(btn=>{
+        btn.onclick=async()=>{
+          const sid=Number(btn.dataset.saveAtt);
+          const student=(roster||[]).find(x=>Number(x.id)===sid);
+          if(!student)return;
+          if(!confirm(`${student.login_no}번 ${student.name} 학생의 ${w}주차 출석 상태를 수정할까요?`))return;
+
+          const reqs=[1,2,3].map(period=>{
+            const p_status=$(`[data-att-status="${sid}-${period}"]`).value;
+            if(isChinese(teacherCourse)){
+              return sb.rpc(`${cPrefix(teacherCourse)}_teacher_set_attendance_status`,{
+                p_semester_id:sem.id,
+                p_student_id:sid,
+                p_week:w,
+                p_period:period,
+                p_status
+              });
+            }
+            return sb.rpc('lg_teacher_set_attendance_status',{
+              p_semester_id:sem.id,
+              p_slot:course(teacherCourse).slot,
+              p_student_id:sid,
+              p_week:w,
+              p_period:period,
+              p_status
+            });
+          });
+
+          const results=await Promise.all(reqs);
+          const bad=results.find(r=>r.error||!r.data?.ok);
+          if(bad){
+            alert(bad.data?.message||bad.error?.message||'출석 수정에 실패했습니다.');
+            return;
+          }
+          msg($('#taMsg'),`${student.login_no}번 ${student.name} 학생의 ${w}주차 출석을 수정했습니다.`,true);
+          load();
+        };
+      });
+    }
+  };
+
+  $('#taWeek').onchange=load;
+  load();
 }
 
 async function renderTeacherQuiz(){if(!isChinese(teacherCourse)){currentTeacherTab='midterm';switchTeacherPane('midterm');return renderTeacherMidterm()}const pane=$('#tquiz'),sem=selectedSemester(),p=cPrefix(teacherCourse);const {data:qs,error}=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}const maxRound=(qs||[]).reduce((m,q)=>Math.max(m,q.round),0);pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 회차 5~6문항, 누적 원점수를 30점으로 환산합니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(qs||[]).map(q=>quizEditor(q)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;$('#addQuizBtn').onclick=async()=>{const {error}=await sb.from(`${p}_quizzes`).insert({semester_id:sem.id,round:maxRound+1,answer_key:['A','A','A','A','A'],is_open:false,counted:true});if(error)alert(error.message);else renderTeacherQuiz()};pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const {error}=await sb.from(`${p}_quizzes`).update({answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked}).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';setTimeout(()=>btn.textContent='설정 저장',900)}})}
