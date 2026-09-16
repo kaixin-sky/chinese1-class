@@ -95,25 +95,104 @@ $$('#stabs button').forEach(b=>b.onclick=()=>switchStudentTab(b.dataset.tab));
 
 async function renderStudentAttendance(){
   if(!studentToken)return;
-  $('#attendancePane').innerHTML=`<div class="card"><h3 class="section-title">출석 단어 입력</h3><div id="week1AutoStudent" class="notice hidden" style="margin-bottom:10px"><b>1주차 자동 출석</b><br>명단이 2주차에 확정되므로 1주차는 모든 과목에서 1·2·3교시가 자동으로 출석 처리됩니다.</div><div class="grid g2"><label>주차<select id="aw">${weekOpts()}</select></label><label>교시<select id="ap"><option value="1">1교시</option><option value="2">2교시</option><option value="3">3교시</option></select></label></div><label style="display:block;margin-top:10px">제시 단어<input id="attword" placeholder="시작 또는 종료 단어" autocomplete="off"></label><button id="attsub" class="primary" style="margin-top:10px">출석 확인</button><div id="attmsg" class="muted" style="margin-top:8px"></div><div class="muted" style="margin-top:6px">※ 서버 저장이 성공한 경우에만 입력한 단어가 지워집니다. 실패하면 단어가 그대로 남습니다.</div><div id="attweekstatus" style="margin-top:12px"></div></div>`;
+  $('#attendancePane').innerHTML=`<div class="card"><h3 class="section-title">출석 단어 입력</h3><div id="week1AutoStudent" class="notice hidden" style="margin-bottom:10px"><b>1주차 자동 출석</b><br>명단이 2주차에 확정되므로 1주차는 모든 과목에서 1·2·3교시가 자동으로 출석 처리됩니다.</div><div class="grid g2"><label>주차<select id="aw">${weekOpts()}</select></label><label>교시<select id="ap"><option value="1">1교시</option><option value="2">2교시</option><option value="3">3교시</option></select></label></div><div id="attGateHint" class="muted" style="margin-top:10px"></div><label style="display:block;margin-top:8px">제시 단어<input id="attword" placeholder="교수자가 출석을 연 뒤 단어 입력" autocomplete="off"></label><button id="attsub" class="primary" style="margin-top:10px">출석 확인</button><div id="attmsg" class="muted" style="margin-top:8px"></div><div class="muted" style="margin-top:6px">※ 서버 저장이 성공한 경우에만 <b>✓ 시작 확인</b> 또는 <b>✓ 종료 확인</b>으로 표시됩니다. 실패하면 입력한 단어는 그대로 남습니다.</div><div id="attweekstatus" style="margin-top:12px"></div></div>`;
+
+  let weekData=[];
+  let lastSuccess=null;
+
+  const badge=(label,state,ok)=>{
+    let bg='#e5e7eb',fg='#374151',text=`${label} 대기`;
+    if(ok){bg='#16a34a';fg='white';text=`✓ ${label} 확인`}
+    else if(state==='open'){bg='#16a34a';fg='white';text=`${label} 입력 가능`}
+    else if(state==='closed'){bg='#dc2626';fg='white';text=`${label} 마감`}
+    return `<button type="button" disabled style="opacity:1;cursor:default;background:${bg};color:${fg};border-color:${bg};min-height:38px;padding:7px 10px">${text}</button>`;
+  };
+
+  const drawWeekStatus=()=>{
+    const rows=weekData||[];
+    $('#attweekstatus').innerHTML=`<div class="grid g3">${rows.map(x=>`
+      <div class="q">
+        <b>${x.period}교시</b>
+        <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
+          ${badge('시작',x.start_state,x.start_ok)}
+          ${badge('종료',x.end_state,x.end_ok)}
+        </div>
+        <div style="margin-top:8px">현재 상태: <b>${esc(x.status)}</b></div>
+        ${x.start_ok?`<div class="muted">시작 확인: ${fmtDT(x.start_checked_at)}</div>`:''}
+        ${x.end_ok?`<div class="muted">종료 확인: ${fmtDT(x.end_checked_at)}</div>`:''}
+      </div>`).join('')}</div>`;
+  };
 
   const applyMode=(clear=true)=>{
     const auto=Number($('#aw').value)===1;
     $('#week1AutoStudent').classList.toggle('hidden',!auto);
     $('#ap').disabled=auto;$('#attword').disabled=auto;$('#attsub').disabled=auto;
-    if(auto){$('#attword').value='';msg($('#attmsg'),'1주차는 자동 출석 처리되어 단어 입력이 필요하지 않습니다.',true)}
-    else if(clear)clearMsg($('#attmsg'));
+    if(auto){
+      $('#attword').value='';
+      $('#attGateHint').textContent='1주차는 자동 출석입니다.';
+      msg($('#attmsg'),'1주차는 자동 출석 처리되어 단어 입력이 필요하지 않습니다.',true);
+    }else if(clear)clearMsg($('#attmsg'));
+  };
+
+  const updateSelectedHint=()=>{
+    const w=Number($('#aw').value),p=Number($('#ap').value),x=(weekData||[]).find(v=>Number(v.period)===p);
+    const hint=$('#attGateHint'),word=$('#attword'),btn=$('#attsub');
+    if(w===1)return;
+    word.disabled=false;btn.disabled=false;
+
+    if(x?.week_finalized){
+      hint.innerHTML='<b style="color:#dc2626">이 주차는 이미 출석 확정되었습니다.</b>';
+      word.disabled=true;btn.disabled=true;
+      btn.textContent='출석 확정됨';
+      btn.style.background='';btn.style.borderColor='';btn.style.color='';
+      return;
+    }
+
+    const open=[];
+    if(x?.start_state==='open'&&!x?.start_ok)open.push('시작');
+    if(x?.end_state==='open'&&!x?.end_ok)open.push('종료');
+
+    if(open.length){
+      hint.innerHTML=`<b style="color:#15803d">${open.join('·')} 출석 입력 가능</b> · 교수자가 마감하면 더 이상 인정되지 않습니다.`;
+      word.placeholder=`현재 ${open.join('·')} 출석 단어 입력`;
+    }else if(x?.start_ok&&x?.end_ok){
+      hint.innerHTML='<b style="color:#15803d">✓ 이 교시는 시작·종료 출석이 모두 확인되었습니다.</b>';
+      word.placeholder='출석 확인 완료';
+    }else if(x?.end_state==='closed'){
+      hint.innerHTML='<b style="color:#dc2626">이 교시는 출석 입력이 마감되었습니다.</b>';
+      word.placeholder='출석 입력 마감';
+    }else{
+      hint.textContent='교수자가 시작 또는 종료 출석을 연 뒤 단어를 입력하세요.';
+      word.placeholder='교수자가 출석을 연 뒤 단어 입력';
+    }
+
+    if(lastSuccess&&lastSuccess.week===w&&lastSuccess.period===p){
+      btn.textContent=`✓ ${lastSuccess.kind==='start'?'시작':'종료'} 확인`;
+      btn.style.background='#16a34a';btn.style.borderColor='#16a34a';btn.style.color='white';
+    }else{
+      btn.textContent='출석 확인';
+      btn.style.background='';btn.style.borderColor='';btn.style.color='';
+    }
   };
 
   const refresh=async(clear=true)=>{
     applyMode(clear);
-    const rpc=isChinese(student.course)?`${cPrefix(student.course)}_get_attendance_week`:'lg_get_attendance_week';
+    const rpc=isChinese(student.course)?`${cPrefix(student.course)}_get_attendance_week_v2`:'lg_get_attendance_week_v2';
     const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number($('#aw').value)});
-    if(error){$('#attweekstatus').innerHTML=`<div class="bad">현재 출석 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;return}
-    $('#attweekstatus').innerHTML=`<div class="grid g3">${(data||[]).map(x=>`<div class="q"><b>${x.period}교시</b><div>${esc(x.status)}</div></div>`).join('')}</div>`;
+    if(error){
+      $('#attweekstatus').innerHTML=`<div class="bad">현재 출석 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;
+      return;
+    }
+    weekData=data||[];
+    drawWeekStatus();
+    updateSelectedHint();
   };
 
-  $('#aw').onchange=()=>refresh(true);
+  $('#aw').onchange=()=>{lastSuccess=null;refresh(true)};
+  $('#ap').onchange=()=>{lastSuccess=null;updateSelectedHint()};
+  $('#attword').onfocus=()=>refresh(false);
+  $('#attword').oninput=()=>{if(lastSuccess){lastSuccess=null;updateSelectedHint()}};
+
   $('#attsub').onclick=async()=>{
     if(Number($('#aw').value)===1)return;
     const word=$('#attword').value.trim();
@@ -124,20 +203,27 @@ async function renderStudentAttendance(){
     clearMsg($('#attmsg'));
     try{
       const rpc=isChinese(student.course)?`${cPrefix(student.course)}_check_attendance`:'lg_check_attendance';
-      const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number(weekEl.value),p_period:Number(periodEl.value),p_word:word});
+      const week=Number(weekEl.value),period=Number(periodEl.value);
+      const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:week,p_period:period,p_word:word});
       if(error||!data?.ok){
+        lastSuccess=null;
         msg($('#attmsg'),`${data?.message||error?.message||'확인 실패'} · 입력한 단어는 지우지 않았습니다.`);
         return;
       }
       wordEl.value='';
+      lastSuccess={week,period,kind:data.kind};
       const kind=data.kind==='start'?'시작':'종료';
       msg($('#attmsg'),`✅ ${kind} 출석 확인 완료 · ${fmtDT(data.checked_at)}`,true);
       await refresh(false);
       renderStudentScores();
     }catch(e){
+      lastSuccess=null;
       msg($('#attmsg'),`서버 연결에 실패했습니다. 다시 눌러주세요. 입력한 단어는 지우지 않았습니다. (${e?.message||'통신 오류'})`);
     }finally{
-      btn.textContent=oldText;weekEl.disabled=false;periodEl.disabled=false;wordEl.disabled=false;applyMode(false);
+      weekEl.disabled=false;periodEl.disabled=false;wordEl.disabled=false;
+      applyMode(false);
+      if(!lastSuccess)btn.textContent=oldText==='확인 중…'?'출석 확인':oldText;
+      updateSelectedHint();
     }
   };
   refresh(true);
@@ -383,6 +469,7 @@ async function renderTeacherAttendance(){
   const load=async()=>{
     const w=Number($('#taWeek').value);
     let week,words,recs,roster;
+    const courseKey=course(teacherCourse).slot;
     if(isChinese(teacherCourse)){
       const p=cPrefix(teacherCourse);
       [{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([
@@ -401,58 +488,129 @@ async function renderTeacherAttendance(){
       ]);
     }
 
+    const ctrlR=await sb.from('attendance_period_controls').select('*').eq('semester_id',sem.id).eq('course_key',courseKey).eq('week',w).order('period');
+    if(ctrlR.error){
+      $('#taBody').innerHTML=`<div class="bad">출석 열기·마감 상태를 불러오지 못했습니다: ${esc(ctrlR.error.message)}</div>`;
+      return;
+    }
+    const controls=ctrlR.data||[];
+    const ctrlBy=new Map(controls.map(c=>[Number(c.period),c]));
     const by=new Map((recs||[]).map(r=>[`${r.student_id}-${r.period}`,r]));
-    const status=(r,finalized)=>{
-      if(!r)return finalized?'결석':'미확인';
+
+    const stateOf=(period,kind)=>ctrlBy.get(Number(period))?.[`${kind}_state`]||'waiting';
+    const endClosed=period=>stateOf(period,'end')==='closed';
+
+    const status=(r,finalized,closed=false)=>{
+      const done=!!finalized||!!closed;
+      if(!r)return done?'결석':'미확인';
       if(r.start_ok&&r.end_ok)return'출석';
       if(!r.start_ok&&r.end_ok)return'지각';
-      if(r.start_ok&&!r.end_ok)return finalized?'조퇴':'시작확인';
-      return finalized?'결석':'미확인';
+      if(r.start_ok&&!r.end_ok)return done?'조퇴':'시작확인';
+      return done?'결석':'미확인';
     };
-    const statusKey=(r,finalized)=>{
-      const s=status(r,finalized);
+    const statusKey=(r,finalized,closed=false)=>{
+      const s=status(r,finalized,closed);
       if(s==='출석')return'present';if(s==='지각')return'late';if(s==='조퇴')return'early';if(s==='결석')return'absent';return'absent';
     };
     const optionHtml=(r,finalized)=>{
-      const cur=statusKey(r,finalized);
+      const cur=statusKey(r,finalized,true);
       return [['present','출석'],['late','지각'],['early','조퇴'],['absent','결석']].map(([v,t])=>`<option value="${v}" ${cur===v?'selected':''}>${t}</option>`).join('');
+    };
+
+    const gateButton=(period,kind)=>{
+      const state=stateOf(period,kind),label=kind==='start'?'시작 출석':'종료 출석';
+      let bg='#e5e7eb',fg='#374151',text=`${label} 열기`;
+      if(state==='open'){bg='#16a34a';fg='white';text=`${label} 마감`}
+      else if(state==='closed'){bg='#dc2626';fg='white';text=`${label} 마감됨`}
+      const disabled=!!week?.finalized;
+      return `<button type="button" data-gate-period="${period}" data-gate-kind="${kind}" data-gate-state="${state}" ${disabled?'disabled':''} style="background:${bg};color:${fg};border-color:${bg};min-height:40px;opacity:${disabled?'.55':'1'}">${disabled?'주차 확정됨':text}</button>`;
     };
 
     const auto=w===1;
     const canEdit=!auto&&!!week?.finalized;
     const showAudit=!auto;
+    const anyGateOpen=controls.some(c=>c.start_state==='open'||c.end_state==='open');
 
     $('#taBody').innerHTML=`
       ${auto?'<div class="notice" style="margin-bottom:10px"><b>1주차 자동 출석 고정</b><br>명단이 2주차에 확정되므로 모든 학생의 1주차 1·2·3교시는 자동으로 출석 처리됩니다. 출석 단어 입력과 주차 확정 작업이 필요하지 않습니다.</div>':''}
+      ${!auto&&!week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교시별 출석 열기·마감</b><br><b style="color:#15803d">초록색 = 학생 입력 가능</b> · <b style="color:#dc2626">빨간색 = 마감</b> · 회색 = 아직 열지 않음. 종료 출석을 열면 그 교시의 시작 출석은 자동 마감됩니다.</div>':''}
       ${!auto&&week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교수자 출석 수정 가능</b><br>학생별 상태를 바꾼 뒤 <b>수정 저장</b>을 누르세요. 학생이 실제 입력한 시간은 수정해도 보존되며, 교수 수정 이력도 별도로 기록됩니다.</div>':''}
       ${!auto&&!week?.finalized?'<div class="muted" style="margin-bottom:10px">학생별 출석 수정은 먼저 이 주차의 출석을 확정한 뒤 사용할 수 있습니다. <b>기록 보기</b>는 확정 전에도 사용할 수 있습니다.</div>':''}
       <div class="grid g3">
-        ${[1,2,3].map(i=>{const x=(words||[]).find(a=>a.period===i)||{};return `<div class="q"><b>${i}교시</b><label>시작 단어<input data-start="${i}" value="${esc(x.start_word||'')}" ${auto?'disabled':''}></label><label>종료 단어<input data-end="${i}" value="${esc(x.end_word||'')}" ${auto?'disabled':''}></label></div>`}).join('')}
+        ${[1,2,3].map(i=>{
+          const x=(words||[]).find(a=>a.period===i)||{};
+          const c=ctrlBy.get(i)||{};
+          return `<div class="q">
+            <b>${i}교시</b>
+            <label>시작 단어<input data-start="${i}" value="${esc(x.start_word||'')}" ${auto||week?.finalized?'disabled':''}></label>
+            <label>종료 단어<input data-end="${i}" value="${esc(x.end_word||'')}" ${auto||week?.finalized?'disabled':''}></label>
+            ${!auto?`<div class="row" style="margin-top:10px;gap:7px;flex-wrap:wrap">${gateButton(i,'start')}${gateButton(i,'end')}</div>
+            <div class="muted" style="margin-top:7px">시작: ${c.start_state==='open'?'<b style="color:#15803d">입력 가능</b>':c.start_state==='closed'?'<b style="color:#dc2626">마감</b>':'대기'} · 종료: ${c.end_state==='open'?'<b style="color:#15803d">입력 가능</b>':c.end_state==='closed'?'<b style="color:#dc2626">마감</b>':'대기'}</div>`:''}
+          </div>`;
+        }).join('')}
       </div>
-      <div class="row"><button id="saveWords" class="primary" ${auto?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div>
+      <div class="row"><button id="saveWords" class="primary" ${auto||week?.finalized?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div>
       <div id="taMsg" class="muted" style="margin-top:8px"></div>
-      <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b></div>
+      <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b>${anyGateOpen?' · <span style="color:#15803d">출석 입력 진행 중</span>':''}</div>
       <div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${showAudit?'<th>기록</th>':''}${canEdit?'<th>수정</th>':''}</tr></thead><tbody>
-        ${(roster||[]).map(s=>`<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized)}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`).join('')}
+        ${(roster||[]).map(s=>`<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized,endClosed(p))}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`).join('')}
       </tbody></table></div>
       <div id="auditPanel" class="card hidden" style="margin-top:12px;background:#fafbff"></div>`;
 
     if(auto)return;
 
     $('#saveWords').onclick=async()=>{
+      if(anyGateOpen){msg($('#taMsg'),'출석 입력이 진행 중입니다. 시작·종료 출석을 모두 마감한 뒤 단어를 수정하세요.');return}
       const rows=[1,2,3].map(p=>({semester_id:sem.id,...(!isChinese(teacherCourse)?{slot:course(teacherCourse).slot}:{}),week:w,period:p,start_word:$(`[data-start="${p}"]`).value.trim(),end_word:$(`[data-end="${p}"]`).value.trim()}));
       const table=isChinese(teacherCourse)?`${cPrefix(teacherCourse)}_attendance_words`:'lg_attendance_words';
       const conflict=isChinese(teacherCourse)?'semester_id,week,period':'semester_id,slot,week,period';
-      const {error}=await sb.from(table).upsert(rows,{onConflict:conflict});if(error)msg($('#taMsg'),error.message);else msg($('#taMsg'),'출석 단어 6개를 저장했습니다.',true);
+      const {error}=await sb.from(table).upsert(rows,{onConflict:conflict});
+      if(error)msg($('#taMsg'),error.message);else msg($('#taMsg'),'출석 단어 6개를 저장했습니다.',true);
     };
 
+    $('#taBody').querySelectorAll('[data-gate-kind]').forEach(btn=>{
+      btn.onclick=async()=>{
+        const period=Number(btn.dataset.gatePeriod),kind=btn.dataset.gateKind,state=btn.dataset.gateState;
+        let action=state==='open'?'close':'open';
+        const label=kind==='start'?'시작 출석':'종료 출석';
+
+        if(state==='open'){
+          const text=kind==='end'
+            ?`${period}교시 종료 출석을 마감할까요?\n마감 후 학생들은 종료 단어를 더 이상 입력할 수 없습니다.`
+            :`${period}교시 시작 출석을 마감할까요?\n마감 후 학생들은 시작 단어를 더 이상 입력할 수 없습니다.`;
+          if(!confirm(text))return;
+        }else if(state==='closed'){
+          if(!confirm(`${period}교시 ${label}을 다시 열까요?`))return;
+        }else if(kind==='end'){
+          if(!confirm(`${period}교시 종료 출석을 시작할까요?\n종료 출석을 열면 시작 출석은 자동으로 마감됩니다.`))return;
+        }
+
+        btn.disabled=true;
+        const {data,error}=await sb.rpc('teacher_set_attendance_gate',{
+          p_semester_id:sem.id,p_course_key:courseKey,p_week:w,p_period:period,p_kind:kind,p_action:action
+        });
+        if(error||!data?.ok){
+          msg($('#taMsg'),data?.message||error?.message||'출석 버튼 변경에 실패했습니다.');
+          btn.disabled=false;
+          return;
+        }
+        const done=action==='open'?`${period}교시 ${label}을 열었습니다.`:`${period}교시 ${label}을 마감했습니다.`;
+        msg($('#taMsg'),done,true);
+        load();
+      };
+    });
+
     $('#finalizeWeek').onclick=async()=>{
-      if(!week?.finalized&&!confirm(`${w}주차 출석을 확정할까요? 미입력 교시는 결석으로 기록됩니다.`))return;
-      let r;if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized});else r=await sb.rpc('lg_set_attendance_week_finalized',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized});
+      if(!week?.finalized){
+        const extra=anyGateOpen?'\n현재 입력 중인 출석 버튼이 있습니다. 주차를 확정하면 학생 입력은 더 이상 인정되지 않습니다.':'';
+        if(!confirm(`${w}주차 출석을 확정할까요? 미입력 교시는 결석으로 기록됩니다.${extra}`))return;
+      }
+      let r;
+      if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized});
+      else r=await sb.rpc('lg_set_attendance_week_finalized',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized});
       if(r.error)alert(r.error.message);else load();
     };
 
-    const courseKey=course(teacherCourse).slot;
     $('#taBody').querySelectorAll('[data-audit-att]').forEach(btn=>{
       btn.onclick=async()=>{
         const sid=Number(btn.dataset.auditAtt),st=(roster||[]).find(x=>Number(x.id)===sid),panel=$('#auditPanel');if(!st)return;
@@ -462,11 +620,11 @@ async function renderTeacherAttendance(){
           sb.from('attendance_manual_edit_logs').select('*').eq('semester_id',sem.id).eq('course_key',courseKey).eq('student_id',sid).eq('week',w).order('edited_at',{ascending:false}).limit(100)
         ]);
         if(attemptR.error||editR.error){panel.innerHTML=`<h3 class="section-title">학번 ${esc(st.student_no||'-')} · ${esc(st.name)} · ${w}주차 기록</h3><div class="bad">기록을 불러오지 못했습니다: ${esc(attemptR.error?.message||editR.error?.message||'오류')}</div>`;return}
-        const periods=[1,2,3].map(p=>{const r=by.get(`${sid}-${p}`);return `<div class="q"><b>${p}교시</b><div>현재 상태: <b>${status(r,week?.finalized)}</b></div><div class="muted">학생 시작 입력: ${fmtDT(r?.start_checked_at)}</div><div class="muted">학생 종료 입력: ${fmtDT(r?.end_checked_at)}</div></div>`}).join('');
+        const periods=[1,2,3].map(p=>{const r=by.get(`${sid}-${p}`),c=ctrlBy.get(p)||{};return `<div class="q"><b>${p}교시</b><div>현재 상태: <b>${status(r,week?.finalized,endClosed(p))}</b></div><div class="muted">학생 시작 입력: ${fmtDT(r?.start_checked_at)}</div><div class="muted">학생 종료 입력: ${fmtDT(r?.end_checked_at)}</div><div class="muted">시작 출석: ${c.start_state==='open'?'입력 가능':c.start_state==='closed'?'마감':'대기'} · 종료 출석: ${c.end_state==='open'?'입력 가능':c.end_state==='closed'?'마감':'대기'}</div></div>`}).join('');
         const attempts=attemptR.data||[],edits=editR.data||[];
         const attemptHtml=attempts.length?attempts.map(a=>`<tr><td>${fmtDT(a.attempted_at)}</td><td>${a.period}교시</td><td>${a.attempt_kind==='start'?'시작':a.attempt_kind==='end'?'종료':'확인 시도'}</td><td>${a.success?'✅ 성공':'❌ 실패'}</td><td>${esc(a.result_message)}</td><td>${esc(a.attempted_word||'-')}</td></tr>`).join(''):'<tr><td colspan="6" class="muted">서버에 도달한 출석 확인 시도 기록이 없습니다.</td></tr>';
         const editHtml=edits.length?edits.map(e=>`<tr><td>${fmtDT(e.edited_at)}</td><td>${e.period}교시</td><td>${esc(e.old_status)} → <b>${esc(e.new_status)}</b></td><td>${esc(e.editor_email||'-')}</td></tr>`).join(''):'<tr><td colspan="4" class="muted">교수자 수동수정 기록이 없습니다.</td></tr>';
-        panel.innerHTML=`<div class="row"><h3 class="section-title" style="margin:0">학번 ${esc(st.student_no||'-')} · ${esc(st.name)} · ${w}주차 기록</h3><button id="closeAudit">닫기</button></div><div class="grid g3" style="margin-top:10px">${periods}</div><h4>학생 출석 확인 시도</h4><div class="muted" style="margin-bottom:6px">성공·실패와 입력 일시를 기록합니다. 휴대폰의 통신이 끊겨 요청이 서버까지 도달하지 않은 경우에는 기록이 남지 않을 수 있습니다.</div><div class="tablewrap"><table><thead><tr><th>일시</th><th>교시</th><th>구분</th><th>결과</th><th>사유</th><th>입력 단어</th></tr></thead><tbody>${attemptHtml}</tbody></table></div><h4 style="margin-top:14px">교수자 수동수정 이력</h4><div class="tablewrap"><table><thead><tr><th>수정일시</th><th>교시</th><th>변경</th><th>수정자</th></tr></thead><tbody>${editHtml}</tbody></table></div>`;
+        panel.innerHTML=`<div class="row"><h3 class="section-title" style="margin:0">학번 ${esc(st.student_no||'-')} · ${esc(st.name)} · ${w}주차 기록</h3><button id="closeAudit">닫기</button></div><div class="grid g3" style="margin-top:10px">${periods}</div><h4>학생 출석 확인 시도</h4><div class="muted" style="margin-bottom:6px">성공·실패와 입력 일시를 기록합니다. 마감 후 입력 시도는 <b>시작/종료 출석 마감</b>으로 기록됩니다. 휴대폰의 통신이 끊겨 요청이 서버까지 도달하지 않은 경우에는 기록이 남지 않을 수 있습니다.</div><div class="tablewrap"><table><thead><tr><th>일시</th><th>교시</th><th>구분</th><th>결과</th><th>사유</th><th>입력 단어</th></tr></thead><tbody>${attemptHtml}</tbody></table></div><h4 style="margin-top:14px">교수자 수동수정 이력</h4><div class="tablewrap"><table><thead><tr><th>수정일시</th><th>교시</th><th>변경</th><th>수정자</th></tr></thead><tbody>${editHtml}</tbody></table></div>`;
         $('#closeAudit').onclick=()=>panel.classList.add('hidden');
         panel.scrollIntoView({behavior:'smooth',block:'nearest'});
       };
