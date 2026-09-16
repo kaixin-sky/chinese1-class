@@ -13,6 +13,7 @@ const configured=C.SUPABASE_URL&&!String(C.SUPABASE_URL).startsWith('PASTE_')&&C
 if(configured) sb=supabase.createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY); else $('#setupNotice').classList.remove('hidden');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=(n,d=2)=>{const x=Number(n??0);return Number.isFinite(x)?x.toFixed(d):Number(0).toFixed(d)};
+const fmtDT=v=>{if(!v)return '-';try{return new Date(v).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}catch{return String(v)}};
 const course=key=>COURSES[key]||COURSES.chinese1;
 const isChinese=key=>course(key).type==='chinese';
 const cPrefix=key=>course(key).prefix;
@@ -94,10 +95,52 @@ $$('#stabs button').forEach(b=>b.onclick=()=>switchStudentTab(b.dataset.tab));
 
 async function renderStudentAttendance(){
   if(!studentToken)return;
-  $('#attendancePane').innerHTML=`<div class="card"><h3 class="section-title">출석 단어 입력</h3><div id="week1AutoStudent" class="notice hidden" style="margin-bottom:10px"><b>1주차 자동 출석</b><br>명단이 2주차에 확정되므로 1주차는 모든 과목에서 1·2·3교시가 자동으로 출석 처리됩니다.</div><div class="grid g2"><label>주차<select id="aw">${weekOpts()}</select></label><label>교시<select id="ap"><option value="1">1교시</option><option value="2">2교시</option><option value="3">3교시</option></select></label></div><label style="display:block;margin-top:10px">제시 단어<input id="attword" placeholder="시작 또는 종료 단어"></label><button id="attsub" class="primary" style="margin-top:10px">출석 확인</button><div id="attmsg" class="muted" style="margin-top:8px"></div><div id="attweekstatus" style="margin-top:12px"></div></div>`;
-  const applyMode=()=>{const auto=Number($('#aw').value)===1;$('#week1AutoStudent').classList.toggle('hidden',!auto);$('#ap').disabled=auto;$('#attword').disabled=auto;$('#attsub').disabled=auto;if(auto){$('#attword').value='';msg($('#attmsg'),'1주차는 자동 출석 처리되어 단어 입력이 필요하지 않습니다.',true)}else clearMsg($('#attmsg'))};
-  const refresh=async()=>{applyMode();const rpc=isChinese(student.course)?`${cPrefix(student.course)}_get_attendance_week`:'lg_get_attendance_week';const {data}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number($('#aw').value)});$('#attweekstatus').innerHTML=`<div class="grid g3">${(data||[]).map(x=>`<div class="q"><b>${x.period}교시</b><div>${esc(x.status)}</div></div>`).join('')}</div>`};
-  $('#aw').onchange=refresh;$('#attsub').onclick=async()=>{if(Number($('#aw').value)===1)return;const rpc=isChinese(student.course)?`${cPrefix(student.course)}_check_attendance`:'lg_check_attendance';const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number($('#aw').value),p_period:Number($('#ap').value),p_word:$('#attword').value.trim()});$('#attword').value='';if(error||!data?.ok)msg($('#attmsg'),data?.message||error?.message||'확인 실패');else{msg($('#attmsg'),data.kind==='start'?'시작 출석 확인 완료':'종료 출석 확인 완료',true);refresh();renderStudentScores()}};refresh();
+  $('#attendancePane').innerHTML=`<div class="card"><h3 class="section-title">출석 단어 입력</h3><div id="week1AutoStudent" class="notice hidden" style="margin-bottom:10px"><b>1주차 자동 출석</b><br>명단이 2주차에 확정되므로 1주차는 모든 과목에서 1·2·3교시가 자동으로 출석 처리됩니다.</div><div class="grid g2"><label>주차<select id="aw">${weekOpts()}</select></label><label>교시<select id="ap"><option value="1">1교시</option><option value="2">2교시</option><option value="3">3교시</option></select></label></div><label style="display:block;margin-top:10px">제시 단어<input id="attword" placeholder="시작 또는 종료 단어" autocomplete="off"></label><button id="attsub" class="primary" style="margin-top:10px">출석 확인</button><div id="attmsg" class="muted" style="margin-top:8px"></div><div class="muted" style="margin-top:6px">※ 서버 저장이 성공한 경우에만 입력한 단어가 지워집니다. 실패하면 단어가 그대로 남습니다.</div><div id="attweekstatus" style="margin-top:12px"></div></div>`;
+
+  const applyMode=(clear=true)=>{
+    const auto=Number($('#aw').value)===1;
+    $('#week1AutoStudent').classList.toggle('hidden',!auto);
+    $('#ap').disabled=auto;$('#attword').disabled=auto;$('#attsub').disabled=auto;
+    if(auto){$('#attword').value='';msg($('#attmsg'),'1주차는 자동 출석 처리되어 단어 입력이 필요하지 않습니다.',true)}
+    else if(clear)clearMsg($('#attmsg'));
+  };
+
+  const refresh=async(clear=true)=>{
+    applyMode(clear);
+    const rpc=isChinese(student.course)?`${cPrefix(student.course)}_get_attendance_week`:'lg_get_attendance_week';
+    const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number($('#aw').value)});
+    if(error){$('#attweekstatus').innerHTML=`<div class="bad">현재 출석 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;return}
+    $('#attweekstatus').innerHTML=`<div class="grid g3">${(data||[]).map(x=>`<div class="q"><b>${x.period}교시</b><div>${esc(x.status)}</div></div>`).join('')}</div>`;
+  };
+
+  $('#aw').onchange=()=>refresh(true);
+  $('#attsub').onclick=async()=>{
+    if(Number($('#aw').value)===1)return;
+    const word=$('#attword').value.trim();
+    if(!word){msg($('#attmsg'),'단어를 입력하세요.');return}
+    const btn=$('#attsub'),weekEl=$('#aw'),periodEl=$('#ap'),wordEl=$('#attword');
+    const oldText=btn.textContent;
+    btn.disabled=true;weekEl.disabled=true;periodEl.disabled=true;wordEl.disabled=true;btn.textContent='확인 중…';
+    clearMsg($('#attmsg'));
+    try{
+      const rpc=isChinese(student.course)?`${cPrefix(student.course)}_check_attendance`:'lg_check_attendance';
+      const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number(weekEl.value),p_period:Number(periodEl.value),p_word:word});
+      if(error||!data?.ok){
+        msg($('#attmsg'),`${data?.message||error?.message||'확인 실패'} · 입력한 단어는 지우지 않았습니다.`);
+        return;
+      }
+      wordEl.value='';
+      const kind=data.kind==='start'?'시작':'종료';
+      msg($('#attmsg'),`✅ ${kind} 출석 확인 완료 · ${fmtDT(data.checked_at)}`,true);
+      await refresh(false);
+      renderStudentScores();
+    }catch(e){
+      msg($('#attmsg'),`서버 연결에 실패했습니다. 다시 눌러주세요. 입력한 단어는 지우지 않았습니다. (${e?.message||'통신 오류'})`);
+    }finally{
+      btn.textContent=oldText;weekEl.disabled=false;periodEl.disabled=false;wordEl.disabled=false;applyMode(false);
+    }
+  };
+  refresh(true);
 }
 
 function questionUI(n,prefix){return Array.from({length:n},(_,i)=>`<div class="q"><b>${i+1}번</b><div class="choices">${['A','B','C','D'].map(c=>`<label class="choice"><input type="radio" name="${prefix}${i}" value="${c}">${c}</label>`).join('')}</div></div>`).join('')}
@@ -368,137 +411,79 @@ async function renderTeacherAttendance(){
     };
     const statusKey=(r,finalized)=>{
       const s=status(r,finalized);
-      if(s==='출석')return'present';
-      if(s==='지각')return'late';
-      if(s==='조퇴')return'early';
-      if(s==='결석')return'absent';
-      return'absent';
+      if(s==='출석')return'present';if(s==='지각')return'late';if(s==='조퇴')return'early';if(s==='결석')return'absent';return'absent';
     };
     const optionHtml=(r,finalized)=>{
       const cur=statusKey(r,finalized);
-      return [
-        ['present','출석'],
-        ['late','지각'],
-        ['early','조퇴'],
-        ['absent','결석']
-      ].map(([v,t])=>`<option value="${v}" ${cur===v?'selected':''}>${t}</option>`).join('');
+      return [['present','출석'],['late','지각'],['early','조퇴'],['absent','결석']].map(([v,t])=>`<option value="${v}" ${cur===v?'selected':''}>${t}</option>`).join('');
     };
 
     const auto=w===1;
     const canEdit=!auto&&!!week?.finalized;
+    const showAudit=!auto;
 
     $('#taBody').innerHTML=`
       ${auto?'<div class="notice" style="margin-bottom:10px"><b>1주차 자동 출석 고정</b><br>명단이 2주차에 확정되므로 모든 학생의 1주차 1·2·3교시는 자동으로 출석 처리됩니다. 출석 단어 입력과 주차 확정 작업이 필요하지 않습니다.</div>':''}
-      ${!auto&&week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교수자 출석 수정 가능</b><br>학생별 1·2·3교시를 출석·지각·조퇴·결석으로 바꾼 뒤 오른쪽의 <b>수정 저장</b>을 누르세요.</div>':''}
-      ${!auto&&!week?.finalized?'<div class="muted" style="margin-bottom:10px">학생별 출석 수정은 먼저 이 주차의 출석을 확정한 뒤 사용할 수 있습니다.</div>':''}
+      ${!auto&&week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교수자 출석 수정 가능</b><br>학생별 상태를 바꾼 뒤 <b>수정 저장</b>을 누르세요. 학생이 실제 입력한 시간은 수정해도 보존되며, 교수 수정 이력도 별도로 기록됩니다.</div>':''}
+      ${!auto&&!week?.finalized?'<div class="muted" style="margin-bottom:10px">학생별 출석 수정은 먼저 이 주차의 출석을 확정한 뒤 사용할 수 있습니다. <b>기록 보기</b>는 확정 전에도 사용할 수 있습니다.</div>':''}
       <div class="grid g3">
-        ${[1,2,3].map(i=>{
-          const x=(words||[]).find(a=>a.period===i)||{};
-          return `<div class="q"><b>${i}교시</b><label>시작 단어<input data-start="${i}" value="${esc(x.start_word||'')}" ${auto?'disabled':''}></label><label>종료 단어<input data-end="${i}" value="${esc(x.end_word||'')}" ${auto?'disabled':''}></label></div>`;
-        }).join('')}
+        ${[1,2,3].map(i=>{const x=(words||[]).find(a=>a.period===i)||{};return `<div class="q"><b>${i}교시</b><label>시작 단어<input data-start="${i}" value="${esc(x.start_word||'')}" ${auto?'disabled':''}></label><label>종료 단어<input data-end="${i}" value="${esc(x.end_word||'')}" ${auto?'disabled':''}></label></div>`}).join('')}
       </div>
-      <div class="row">
-        <button id="saveWords" class="primary" ${auto?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button>
-        <button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button>
-      </div>
+      <div class="row"><button id="saveWords" class="primary" ${auto?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div>
       <div id="taMsg" class="muted" style="margin-top:8px"></div>
       <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b></div>
-      <div class="tablewrap">
-        <table>
-          <thead><tr><th>학번</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${canEdit?'<th>수정</th>':''}</tr></thead>
-          <tbody>
-            ${(roster||[]).map(s=>`<tr>
-              <td>${esc(s.student_no||'-')}</td>
-              <td>${esc(s.name)}</td>
-              ${[1,2,3].map(p=>{
-                const r=by.get(`${s.id}-${p}`);
-                return canEdit
-                  ? `<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`
-                  : `<td>${status(r,week?.finalized)}</td>`;
-              }).join('')}
-              ${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}
-            </tr>`).join('')}
-          </tbody>
-        </table>
-      </div>`;
+      <div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${showAudit?'<th>기록</th>':''}${canEdit?'<th>수정</th>':''}</tr></thead><tbody>
+        ${(roster||[]).map(s=>`<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized)}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`).join('')}
+      </tbody></table></div>
+      <div id="auditPanel" class="card hidden" style="margin-top:12px;background:#fafbff"></div>`;
 
     if(auto)return;
 
     $('#saveWords').onclick=async()=>{
-      const rows=[1,2,3].map(p=>({
-        semester_id:sem.id,
-        ...(!isChinese(teacherCourse)?{slot:course(teacherCourse).slot}:{}),
-        week:w,
-        period:p,
-        start_word:$(`[data-start="${p}"]`).value.trim(),
-        end_word:$(`[data-end="${p}"]`).value.trim()
-      }));
+      const rows=[1,2,3].map(p=>({semester_id:sem.id,...(!isChinese(teacherCourse)?{slot:course(teacherCourse).slot}:{}),week:w,period:p,start_word:$(`[data-start="${p}"]`).value.trim(),end_word:$(`[data-end="${p}"]`).value.trim()}));
       const table=isChinese(teacherCourse)?`${cPrefix(teacherCourse)}_attendance_words`:'lg_attendance_words';
       const conflict=isChinese(teacherCourse)?'semester_id,week,period':'semester_id,slot,week,period';
-      const {error}=await sb.from(table).upsert(rows,{onConflict:conflict});
-      if(error)msg($('#taMsg'),error.message);
-      else msg($('#taMsg'),'출석 단어 6개를 저장했습니다.',true);
+      const {error}=await sb.from(table).upsert(rows,{onConflict:conflict});if(error)msg($('#taMsg'),error.message);else msg($('#taMsg'),'출석 단어 6개를 저장했습니다.',true);
     };
 
     $('#finalizeWeek').onclick=async()=>{
       if(!week?.finalized&&!confirm(`${w}주차 출석을 확정할까요? 미입력 교시는 결석으로 기록됩니다.`))return;
-      let r;
-      if(isChinese(teacherCourse)){
-        r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{
-          p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized
-        });
-      }else{
-        r=await sb.rpc('lg_set_attendance_week_finalized',{
-          p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized
-        });
-      }
+      let r;if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized});else r=await sb.rpc('lg_set_attendance_week_finalized',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized});
       if(r.error)alert(r.error.message);else load();
     };
+
+    const courseKey=course(teacherCourse).slot;
+    $('#taBody').querySelectorAll('[data-audit-att]').forEach(btn=>{
+      btn.onclick=async()=>{
+        const sid=Number(btn.dataset.auditAtt),st=(roster||[]).find(x=>Number(x.id)===sid),panel=$('#auditPanel');if(!st)return;
+        panel.classList.remove('hidden');panel.innerHTML=`<h3 class="section-title">학번 ${esc(st.student_no||'-')} · ${esc(st.name)} · ${w}주차 기록</h3><div class="muted">기록을 불러오는 중…</div>`;
+        const [attemptR,editR]=await Promise.all([
+          sb.from('attendance_attempt_logs').select('*').eq('semester_id',sem.id).eq('course_key',courseKey).eq('student_id',sid).eq('week',w).order('attempted_at',{ascending:false}).limit(100),
+          sb.from('attendance_manual_edit_logs').select('*').eq('semester_id',sem.id).eq('course_key',courseKey).eq('student_id',sid).eq('week',w).order('edited_at',{ascending:false}).limit(100)
+        ]);
+        if(attemptR.error||editR.error){panel.innerHTML=`<h3 class="section-title">학번 ${esc(st.student_no||'-')} · ${esc(st.name)} · ${w}주차 기록</h3><div class="bad">기록을 불러오지 못했습니다: ${esc(attemptR.error?.message||editR.error?.message||'오류')}</div>`;return}
+        const periods=[1,2,3].map(p=>{const r=by.get(`${sid}-${p}`);return `<div class="q"><b>${p}교시</b><div>현재 상태: <b>${status(r,week?.finalized)}</b></div><div class="muted">학생 시작 입력: ${fmtDT(r?.start_checked_at)}</div><div class="muted">학생 종료 입력: ${fmtDT(r?.end_checked_at)}</div></div>`}).join('');
+        const attempts=attemptR.data||[],edits=editR.data||[];
+        const attemptHtml=attempts.length?attempts.map(a=>`<tr><td>${fmtDT(a.attempted_at)}</td><td>${a.period}교시</td><td>${a.attempt_kind==='start'?'시작':a.attempt_kind==='end'?'종료':'확인 시도'}</td><td>${a.success?'✅ 성공':'❌ 실패'}</td><td>${esc(a.result_message)}</td><td>${esc(a.attempted_word||'-')}</td></tr>`).join(''):'<tr><td colspan="6" class="muted">서버에 도달한 출석 확인 시도 기록이 없습니다.</td></tr>';
+        const editHtml=edits.length?edits.map(e=>`<tr><td>${fmtDT(e.edited_at)}</td><td>${e.period}교시</td><td>${esc(e.old_status)} → <b>${esc(e.new_status)}</b></td><td>${esc(e.editor_email||'-')}</td></tr>`).join(''):'<tr><td colspan="4" class="muted">교수자 수동수정 기록이 없습니다.</td></tr>';
+        panel.innerHTML=`<div class="row"><h3 class="section-title" style="margin:0">학번 ${esc(st.student_no||'-')} · ${esc(st.name)} · ${w}주차 기록</h3><button id="closeAudit">닫기</button></div><div class="grid g3" style="margin-top:10px">${periods}</div><h4>학생 출석 확인 시도</h4><div class="muted" style="margin-bottom:6px">성공·실패와 입력 일시를 기록합니다. 휴대폰의 통신이 끊겨 요청이 서버까지 도달하지 않은 경우에는 기록이 남지 않을 수 있습니다.</div><div class="tablewrap"><table><thead><tr><th>일시</th><th>교시</th><th>구분</th><th>결과</th><th>사유</th><th>입력 단어</th></tr></thead><tbody>${attemptHtml}</tbody></table></div><h4 style="margin-top:14px">교수자 수동수정 이력</h4><div class="tablewrap"><table><thead><tr><th>수정일시</th><th>교시</th><th>변경</th><th>수정자</th></tr></thead><tbody>${editHtml}</tbody></table></div>`;
+        $('#closeAudit').onclick=()=>panel.classList.add('hidden');
+        panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+      };
+    });
 
     if(canEdit){
       $('#taBody').querySelectorAll('[data-save-att]').forEach(btn=>{
         btn.onclick=async()=>{
-          const sid=Number(btn.dataset.saveAtt);
-          const student=(roster||[]).find(x=>Number(x.id)===sid);
-          if(!student)return;
-          if(!confirm(`학번 ${student.student_no||'-'} ${student.name} 학생의 ${w}주차 출석 상태를 수정할까요?`))return;
-
-          const reqs=[1,2,3].map(period=>{
-            const p_status=$(`[data-att-status="${sid}-${period}"]`).value;
-            if(isChinese(teacherCourse)){
-              return sb.rpc(`${cPrefix(teacherCourse)}_teacher_set_attendance_status`,{
-                p_semester_id:sem.id,
-                p_student_id:sid,
-                p_week:w,
-                p_period:period,
-                p_status
-              });
-            }
-            return sb.rpc('lg_teacher_set_attendance_status',{
-              p_semester_id:sem.id,
-              p_slot:course(teacherCourse).slot,
-              p_student_id:sid,
-              p_week:w,
-              p_period:period,
-              p_status
-            });
-          });
-
-          const results=await Promise.all(reqs);
-          const bad=results.find(r=>r.error||!r.data?.ok);
-          if(bad){
-            alert(bad.data?.message||bad.error?.message||'출석 수정에 실패했습니다.');
-            return;
-          }
-          msg($('#taMsg'),`학번 ${student.student_no||'-'} ${student.name} 학생의 ${w}주차 출석을 수정했습니다.`,true);
-          load();
+          const sid=Number(btn.dataset.saveAtt),st=(roster||[]).find(x=>Number(x.id)===sid);if(!st)return;
+          if(!confirm(`학번 ${st.student_no||'-'} ${st.name} 학생의 ${w}주차 출석 상태를 수정할까요?`))return;
+          const reqs=[1,2,3].map(period=>{const p_status=$(`[data-att-status="${sid}-${period}"]`).value;if(isChinese(teacherCourse))return sb.rpc(`${cPrefix(teacherCourse)}_teacher_set_attendance_status`,{p_semester_id:sem.id,p_student_id:sid,p_week:w,p_period:period,p_status});return sb.rpc('lg_teacher_set_attendance_status',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_student_id:sid,p_week:w,p_period:period,p_status})});
+          const results=await Promise.all(reqs),bad=results.find(r=>r.error||!r.data?.ok);if(bad){alert(bad.data?.message||bad.error?.message||'출석 수정에 실패했습니다.');return}msg($('#taMsg'),`학번 ${st.student_no||'-'} ${st.name} 학생의 ${w}주차 출석을 수정했습니다.`,true);load();
         };
       });
     }
   };
-
-  $('#taWeek').onchange=load;
-  load();
+  $('#taWeek').onchange=load;load();
 }
 
 async function renderTeacherQuiz(){if(!isChinese(teacherCourse)){currentTeacherTab='midterm';switchTeacherPane('midterm');return renderTeacherMidterm()}const pane=$('#tquiz'),sem=selectedSemester(),p=cPrefix(teacherCourse);const {data:qs,error}=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}const maxRound=(qs||[]).reduce((m,q)=>Math.max(m,q.round),0);pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 회차 5~6문항, 누적 원점수를 30점으로 환산합니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(qs||[]).map(q=>quizEditor(q)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;$('#addQuizBtn').onclick=async()=>{const {error}=await sb.from(`${p}_quizzes`).insert({semester_id:sem.id,round:maxRound+1,answer_key:['A','A','A','A','A'],is_open:false,counted:true});if(error)alert(error.message);else renderTeacherQuiz()};pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const {error}=await sb.from(`${p}_quizzes`).update({answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked}).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';setTimeout(()=>btn.textContent='설정 저장',900)}})}
