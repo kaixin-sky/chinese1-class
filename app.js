@@ -580,7 +580,11 @@ async function renderTeacherAttendance(){
             :`${period}교시 시작 출석을 마감할까요?\n마감 후 학생들은 시작 단어를 더 이상 입력할 수 없습니다.`;
           if(!confirm(text))return;
         }else if(state==='closed'){
-          if(!confirm(`${period}교시 ${label}을 다시 열까요?`))return;
+          const otherEndState=kind==='start'?stateOf(period,'end'):'';
+          const extra=(kind==='start'&&otherEndState==='closed')
+            ?'\n시작 출석을 다시 열면 이 교시의 종료 출석은 대기 상태로 되돌아갑니다.'
+            :'';
+          if(!confirm(`${period}교시 ${label}을 다시 열까요?${extra}`))return;
         }else if(kind==='end'){
           if(!confirm(`${period}교시 종료 출석을 시작할까요?\n종료 출석을 열면 시작 출석은 자동으로 마감됩니다.`))return;
         }
