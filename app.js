@@ -8,7 +8,8 @@ const COURSES={
 };
 let sb=null, selectedStudentCourse='chinese1', student=null, studentToken=null;
 let semesters=[], teacherSemesterId=null, teacherCourse='chinese1', currentTeacherTab='semester';
-let courseNames={chinese1:'중국어1',chinese2:'중국어2',large1:'대형1',large2:'대형2'}, homeworkQrTimer=null, draftTimer=null, largeExamAccessCode='';
+let courseNames={chinese1:'중국어1',chinese2:'중국어2',large1:'대형1',large2:'대형2'};
+let courseWeek1Dates={chinese1:'',chinese2:'',large1:'',large2:''}, homeworkQrTimer=null, draftTimer=null, largeExamAccessCode='';
 const configured=C.SUPABASE_URL&&!String(C.SUPABASE_URL).startsWith('PASTE_')&&C.SUPABASE_PUBLISHABLE_KEY&&!String(C.SUPABASE_PUBLISHABLE_KEY).startsWith('PASTE_');
 if(configured) sb=supabase.createClient(C.SUPABASE_URL,C.SUPABASE_PUBLISHABLE_KEY); else $('#setupNotice').classList.remove('hidden');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -308,10 +309,10 @@ async function renderStudentScores(){
   if(!studentToken)return;
   if(isChinese(student.course)){
     const p=cPrefix(student.course),{data}=await sb.rpc(`${p}_get_student_summary`,{p_token:studentToken});if(!data?.ok)return;
-    $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">듣기평가 → 중간</div><div class="score">${fmt(data.midterm)} / 30</div><div>${data.quiz_got}/${data.quiz_max}</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods}</div></div><div class="q"><div class="muted">과제</div><div class="score">${fmt(data.homework_score)} / 20</div><div>${data.homework_done}/${data.homework_total}</div></div><div class="q"><div class="muted">기말고사</div><div class="score">${fmt(data.final_score)} / 30</div><div>원점수 ${data.final_raw}/20</div></div></div><div class="q"><div class="muted">현재 총점</div><div class="score">${fmt(data.total)} / 100</div></div></div>`;
+    $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">듣기평가 → 중간</div><div class="score">${fmt(data.midterm)} / 30</div><div>${data.quiz_got}/${data.quiz_max}</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods} · 공결 ${data.excused_periods||0}</div></div><div class="q"><div class="muted">과제</div><div class="score">${fmt(data.homework_score)} / 20</div><div>${data.homework_done}/${data.homework_total}</div></div><div class="q"><div class="muted">기말고사</div><div class="score">${fmt(data.final_score)} / 30</div><div>원점수 ${data.final_raw}/20</div></div></div><div class="q"><div class="muted">현재 총점</div><div class="score">${fmt(data.total)} / 100</div></div></div>`;
   } else {
     const {data}=await sb.rpc('lg_get_student_summary',{p_token:studentToken});if(!data?.ok)return;
-    $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">중간발표</div><div class="score">${fmt(data.midterm)} / 30</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods}</div></div><div class="q"><div class="muted">기말 과제</div><div class="score">${fmt(data.homework_score)} / 20</div></div><div class="q"><div class="muted">논술형 기말</div><div class="score">${fmt(data.final_score)} / 30</div><div>${data.final_submitted?'제출 완료':'미제출'}</div></div></div><div class="q"><div class="muted">현재 총점</div><div class="score">${fmt(data.total)} / 100</div></div></div>`;
+    $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">중간발표</div><div class="score">${fmt(data.midterm)} / 30</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods} · 공결 ${data.excused_periods||0}</div></div><div class="q"><div class="muted">기말 과제</div><div class="score">${fmt(data.homework_score)} / 20</div></div><div class="q"><div class="muted">논술형 기말</div><div class="score">${fmt(data.final_score)} / 30</div><div>${data.final_submitted?'제출 완료':'미제출'}</div></div></div><div class="q"><div class="muted">현재 총점</div><div class="score">${fmt(data.total)} / 100</div></div></div>`;
   }
 }
 
@@ -327,12 +328,18 @@ $('#teacherCourseSelect').onchange=async()=>{teacherCourse=$('#teacherCourseSele
 async function loadTeacherCourseNames(){
   const sem=selectedSemester();if(!sem)return;
   courseNames.chinese1='중국어1';courseNames.chinese2='중국어2';courseNames.large1='대형1';courseNames.large2='대형2';
+  courseWeek1Dates={chinese1:'',chinese2:'',large1:'',large2:''};
   const [smr,lgr]=await Promise.all([
-    sb.from('sm_course_settings').select('slot,display_name').eq('semester_id',sem.id),
-    sb.from('lg_course_settings').select('slot,display_name').eq('semester_id',sem.id)
+    sb.from('sm_course_settings').select('slot,display_name,week1_date').eq('semester_id',sem.id),
+    sb.from('lg_course_settings').select('slot,display_name,week1_date').eq('semester_id',sem.id)
   ]);
-  (smr.data||[]).forEach(x=>{if(x.slot==='small1')courseNames.chinese1=x.display_name;if(x.slot==='small2')courseNames.chinese2=x.display_name});
-  (lgr.data||[]).forEach(x=>{if(x.slot==='large1'||x.slot==='large2')courseNames[x.slot]=x.display_name});
+  (smr.data||[]).forEach(x=>{
+    if(x.slot==='small1'){courseNames.chinese1=x.display_name;courseWeek1Dates.chinese1=x.week1_date||''}
+    if(x.slot==='small2'){courseNames.chinese2=x.display_name;courseWeek1Dates.chinese2=x.week1_date||''}
+  });
+  (lgr.data||[]).forEach(x=>{
+    if(x.slot==='large1'||x.slot==='large2'){courseNames[x.slot]=x.display_name;courseWeek1Dates[x.slot]=x.week1_date||''}
+  });
   const sel=$('#teacherCourseSelect');
   [...sel.options].forEach(o=>{o.textContent=courseDisplayText(o.value)});
 }
@@ -379,7 +386,7 @@ async function renderTeacherSemester(){
   const pane=$('#tsemester'),sem=selectedSemester(),{data:roster,error}=await getRoster();
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
 
-  const courseNameBlock=`<div class="card"><h3 class="section-title">${esc(course(teacherCourse).label)} 실제 과목명</h3><div class="grid g2"><label>이번 학기 과목명<input id="courseDisplayName" value="${esc(courseLabel(teacherCourse))}"></label><div style="display:flex;align-items:end"><button id="saveCourseName" class="primary">과목명 저장</button></div></div><div class="muted" style="margin-top:8px">프로그램 슬롯은 ${esc(course(teacherCourse).label)}로 유지되고, 실제 과목명은 학기마다 바꿀 수 있습니다.</div></div>`;
+  const courseNameBlock=`<div class="card"><h3 class="section-title">${esc(course(teacherCourse).label)} 과목 정보</h3><div class="grid g2"><label>이번 학기 과목명<input id="courseDisplayName" value="${esc(courseLabel(teacherCourse))}"></label><div style="display:flex;align-items:end"><button id="saveCourseName" class="primary">과목명 저장</button></div><label>1주차 수업 시작 날짜<input id="courseWeek1Date" type="date" value="${esc(courseWeek1Dates[teacherCourse]||'')}"></label><div style="display:flex;align-items:end"><button id="saveWeek1Date">1주차 날짜 저장</button></div></div><div class="muted" style="margin-top:8px">과목마다 실제 1주차 수업 날짜를 한 번 입력해 두면, 공결 자료에 <b>날짜</b>만 있어도 7일 간격으로 해당 주차를 자동 계산합니다. 파일에 주차가 직접 적혀 있으면 그 주차를 우선합니다.</div><div id="week1DateMsg" class="muted" style="margin-top:6px"></div></div>`;
 
   pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">학기 관리</h3><div class="muted">새 학기를 만들면 소형1·소형2·대형1·대형2가 같은 학기 아래 자동 준비됩니다.</div></div><button id="makeActive" ${sem.is_active?'disabled':''}>${sem.is_active?'현재 활성 학기':'이 학기를 학생용으로 활성화'}</button></div><div class="grid g2" style="margin-top:12px"><label>새 학기 이름<input id="newSemesterName" placeholder="예: 2027-1학기"></label><div style="display:flex;align-items:end"><button id="createSemester" class="primary">새 학기 만들기</button></div></div><div id="semesterMsg" class="muted" style="margin-top:8px"></div></div>
   ${courseNameBlock}
@@ -436,6 +443,16 @@ async function renderTeacherSemester(){
     else{courseNames[teacherCourse]=r.data?.display_name||nm||course(teacherCourse).defaultName;await loadTeacherCourseNames();renderTeacherSemester();if(sem.is_active)loadPublicInfo()}
   };
 
+  $('#saveWeek1Date').onclick=async()=>{
+    const d=$('#courseWeek1Date').value||null;
+    const table=isChinese(teacherCourse)?'sm_course_settings':'lg_course_settings';
+    const slot=course(teacherCourse).slot;
+    const {error}=await sb.from(table).update({week1_date:d}).eq('semester_id',sem.id).eq('slot',slot);
+    if(error){msg($('#week1DateMsg'),error.message);return}
+    courseWeek1Dates[teacherCourse]=d||'';
+    msg($('#week1DateMsg'),d?`1주차 시작 날짜를 ${d}로 저장했습니다.`:'1주차 시작 날짜를 비웠습니다.',true);
+  };
+
   $('#rosterFile').onchange=async e=>{const f=e.target.files?.[0];if(f)$('#rosterPaste').value=await f.text()};
 
   $('#replaceRoster').onclick=async()=>{
@@ -462,29 +479,157 @@ async function renderTeacherSemester(){
 
 function renderTeacherQR(){const pane=$('#tqr'),sem=selectedSemester(),url=baseUrl();url.searchParams.set('course',teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 학생접속 QR</h3><div class="muted">이 QR은 같은 웹주소를 사용합니다. 학생은 QR을 찍으면 ${esc(courseLabel(teacherCourse))}가 자동 선택됩니다.</div><div id="studentQR" class="qrbox" style="margin-top:12px"></div><div class="muted" style="word-break:break-all;margin-top:8px">${esc(url.href)}</div>${sem.is_active?'':'<div class="warn" style="margin-top:8px">현재 선택한 학기는 학생용 활성 학기가 아닙니다.</div>'}</div>`;new QRCode($('#studentQR'),{text:url.href,width:220,height:220})}
 
+
+let _xlsxLoaderPromise=null;
+async function ensureXlsxLib(){
+  if(window.XLSX)return window.XLSX;
+  if(_xlsxLoaderPromise)return _xlsxLoaderPromise;
+  _xlsxLoaderPromise=new Promise((resolve,reject)=>{
+    const trySrc=(src,fallback)=>{
+      const s=document.createElement('script');s.src=src;s.async=true;
+      s.onload=()=>window.XLSX?resolve(window.XLSX):(fallback?trySrc(fallback,null):reject(new Error('엑셀 읽기 모듈을 불러오지 못했습니다.')));
+      s.onerror=()=>fallback?trySrc(fallback,null):reject(new Error('엑셀 읽기 모듈을 불러오지 못했습니다.'));
+      document.head.appendChild(s);
+    };
+    trySrc('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js','https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js');
+  });
+  return _xlsxLoaderPromise;
+}
+function normExcuseHeader(v){return String(v??'').trim().toLowerCase().replace(/[\s_\-()\[\]{}]/g,'')}
+function parseExcuseWeek(v,def){const m=String(v??'').match(/(?:^|\D)(1[0-5]|[1-9])(?:\D|$)/);return m?Number(m[1]):Number(def)}
+function parseExcuseDate(v){
+  const s=String(v??'').trim();if(!s)return'';
+  let m=s.match(/(20\d{2})\s*[년.\/-]\s*(\d{1,2})\s*[월.\/-]\s*(\d{1,2})/);
+  if(!m)m=s.match(/^(20\d{2})(\d{2})(\d{2})$/);
+  if(m){
+    const y=Number(m[1]),mo=Number(m[2]),d=Number(m[3]);
+    const dt=new Date(Date.UTC(y,mo-1,d));
+    if(dt.getUTCFullYear()===y&&dt.getUTCMonth()===mo-1&&dt.getUTCDate()===d)return`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+  const dt=new Date(s);
+  if(!Number.isNaN(dt.getTime()))return`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  return'';
+}
+function excuseWeekFromDate(dateStr,week1Date){
+  const d=parseExcuseDate(dateStr),w1=parseExcuseDate(week1Date);
+  if(!d||!w1)return null;
+  const a=new Date(`${d}T00:00:00Z`),b=new Date(`${w1}T00:00:00Z`);
+  const diff=Math.floor((a-b)/86400000);
+  return Math.floor(diff/7)+1;
+}
+function parseExcusePeriods(v,defaults=[1,2,3]){
+  const s=String(v??'').trim();if(!s)return [...defaults];
+  if(/전체|전교시|모두|all/i.test(s))return [1,2,3];
+  const nums=[...new Set((s.match(/[123]/g)||[]).map(Number))];return nums.length?nums:[...defaults];
+}
+async function readExcuseFileRows(file){
+  const name=(file?.name||'').toLowerCase();
+  if(/\.(xlsx|xls)$/.test(name)){
+    const XLSX=await ensureXlsxLib(),buf=await file.arrayBuffer(),wb=XLSX.read(buf,{type:'array'}),ws=wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false,blankrows:false});
+  }
+  const text=await file.text();
+  return text.split(/\r?\n/).filter(x=>x.trim()).map(line=>{
+    if(line.includes('\t'))return line.split('\t').map(x=>x.trim().replace(/^"|"$/g,''));
+    return line.split(',').map(x=>x.trim().replace(/^"|"$/g,''));
+  });
+}
+function buildExcusePreview(rows,roster,defaultWeek,defaultPeriods,week1Date=''){
+  const aliases={
+    no:['학번','학생번호','studentno','studentnumber','studentid'],
+    name:['이름','성명','학생명','name'],
+    week:['주차','week','수업주차'],
+    date:['공결일','공결일자','결석일','결석일자','수업일','수업일자','해당일','대상일','날짜','일자','date'],
+    period:['교시','period','시간','수업교시'],
+    decision:['승인','승인여부','처리상태','상태','결과','인정여부']
+  };
+  const normAliases=k=>aliases[k].map(normExcuseHeader);
+  let headerAt=-1,cols={};
+  for(let r=0;r<Math.min(rows.length,12);r++){
+    const h=(rows[r]||[]).map(normExcuseHeader);
+    const find=k=>h.findIndex(x=>normAliases(k).includes(x));
+    const no=find('no'),nm=find('name');
+    if(no>=0||nm>=0){headerAt=r;cols={no,name:nm,week:find('week'),date:find('date'),period:find('period'),decision:find('decision')};break}
+  }
+  const byNo=new Map((roster||[]).filter(x=>x.student_no).map(x=>[String(x.student_no).trim(),x]));
+  const byName=new Map();
+  (roster||[]).forEach(x=>{const k=String(x.name||'').trim();if(!k)return;const a=byName.get(k)||[];a.push(x);byName.set(k,a)});
+  const out=[],unmatched=[];const seen=new Set();
+  const start=headerAt>=0?headerAt+1:0;
+
+  for(let ri=start;ri<rows.length;ri++){
+    const row=rows[ri]||[];if(!row.some(x=>String(x).trim()))continue;
+    let no='',nm='',week=Number(defaultWeek),periods=[...defaultPeriods],decision='',date='',weekSource='현재 선택 주차';
+
+    if(headerAt>=0){
+      if(cols.no>=0)no=String(row[cols.no]??'').trim().replace(/\.0$/,'');
+      if(cols.name>=0)nm=String(row[cols.name]??'').trim();
+      if(cols.period>=0)periods=parseExcusePeriods(row[cols.period],defaultPeriods);
+      if(cols.decision>=0)decision=String(row[cols.decision]??'').trim();
+      if(cols.date>=0)date=parseExcuseDate(row[cols.date]);
+      const rawWeek=cols.week>=0?String(row[cols.week]??'').trim():'';
+      if(rawWeek){
+        week=parseExcuseWeek(rawWeek,defaultWeek);weekSource='파일 주차';
+      }else if(date){
+        if(!week1Date){unmatched.push({row:ri+1,student_no:no,name:nm,reason:'과목의 1주차 시작 날짜 미설정'});continue}
+        const calc=excuseWeekFromDate(date,week1Date);
+        if(!calc||calc<1||calc>15){unmatched.push({row:ri+1,student_no:no,name:nm,reason:`수업기간 밖 날짜 ${date}`});continue}
+        week=calc;weekSource=`날짜 ${date}`;
+      }
+    }else{
+      const cells=row.map(x=>String(x??'').trim());
+      const ni=cells.findIndex(x=>/^\d{7,12}(?:\.0)?$/.test(x));
+      if(ni>=0){no=cells[ni].replace(/\.0$/,'');nm=cells[ni+1]||cells.find((x,i)=>i!==ni&&/[가-힣]{2,}/.test(x))||''}
+      else nm=cells.find(x=>/[가-힣]{2,}/.test(x))||'';
+      date=cells.map(parseExcuseDate).find(Boolean)||'';
+      if(date){
+        if(!week1Date){unmatched.push({row:ri+1,student_no:no,name:nm,reason:'과목의 1주차 시작 날짜 미설정'});continue}
+        const calc=excuseWeekFromDate(date,week1Date);
+        if(!calc||calc<1||calc>15){unmatched.push({row:ri+1,student_no:no,name:nm,reason:`수업기간 밖 날짜 ${date}`});continue}
+        week=calc;weekSource=`날짜 ${date}`;
+      }
+    }
+
+    if(decision&&/(반려|불인정|거절|취소|reject|denied?)/i.test(decision))continue;
+    if(week===1){unmatched.push({row:ri+1,student_no:no,name:nm,reason:'1주차는 자동출석 고정'});continue}
+    if(week<2||week>15){unmatched.push({row:ri+1,student_no:no,name:nm,reason:`주차 범위 오류 (${week})`});continue}
+
+    let st=no?byNo.get(no):null,matchedBy='학번';
+    if(!st&&nm){const arr=byName.get(nm)||[];if(arr.length===1){st=arr[0];matchedBy='이름'}}
+    if(!st){unmatched.push({row:ri+1,student_no:no,name:nm,reason:nm&&((byName.get(nm)||[]).length>1)?'동명이인':'명단 불일치'});continue}
+    for(const p of periods){
+      const key=`${st.id}-${week}-${p}`;if(seen.has(key))continue;seen.add(key);
+      out.push({student_id:Number(st.id),student_no:st.student_no||no,name:st.name,week:Number(week),period:Number(p),matched_by:matchedBy,date,week_source:weekSource});
+    }
+  }
+  return {items:out,unmatched};
+}
+
 async function renderTeacherAttendance(){
   const pane=$('#tattendance'),sem=selectedSemester();
   pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 출석 설정</h3><label style="max-width:220px;display:block">주차<select id="taWeek">${weekOpts()}</select></label><div id="taBody" style="margin-top:10px"></div></div>`;
 
   const load=async()=>{
     const w=Number($('#taWeek').value);
-    let week,words,recs,roster;
+    let week,words,recs,roster,excusedAll;
     const courseKey=course(teacherCourse).slot;
     if(isChinese(teacherCourse)){
       const p=cPrefix(teacherCourse);
-      [{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([
+      [{data:week},{data:words},{data:recs},{data:roster},{data:excusedAll}]=await Promise.all([
         sb.from(`${p}_attendance_weeks`).select('*').eq('semester_id',sem.id).eq('week',w).maybeSingle(),
         sb.from(`${p}_attendance_words`).select('*').eq('semester_id',sem.id).eq('week',w).order('period'),
         sb.from(`${p}_attendance_records`).select('*').eq('semester_id',sem.id).eq('week',w),
-        sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id).order('student_no')
+        sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id).order('student_no'),
+        sb.from(`${p}_attendance_records`).select('student_id,excused').eq('semester_id',sem.id).eq('excused',true)
       ]);
     }else{
       const sl=course(teacherCourse).slot;
-      [{data:week},{data:words},{data:recs},{data:roster}]=await Promise.all([
+      [{data:week},{data:words},{data:recs},{data:roster},{data:excusedAll}]=await Promise.all([
         sb.from('lg_attendance_weeks').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w).maybeSingle(),
         sb.from('lg_attendance_words').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w).order('period'),
         sb.from('lg_attendance_records').select('*').eq('semester_id',sem.id).eq('slot',sl).eq('week',w),
-        sb.from('lg_students').select('id,student_no,name').eq('semester_id',sem.id).eq('slot',sl).order('student_no')
+        sb.from('lg_students').select('id,student_no,name').eq('semester_id',sem.id).eq('slot',sl).order('student_no'),
+        sb.from('lg_attendance_records').select('student_id,excused').eq('semester_id',sem.id).eq('slot',sl).eq('excused',true)
       ]);
     }
 
@@ -496,12 +641,18 @@ async function renderTeacherAttendance(){
     const controls=ctrlR.data||[];
     const ctrlBy=new Map(controls.map(c=>[Number(c.period),c]));
     const by=new Map((recs||[]).map(r=>[`${r.student_id}-${r.period}`,r]));
+    const excusedCountByStudent=new Map();
+    for(const r of (excusedAll||[])){
+      const sid=Number(r.student_id);
+      excusedCountByStudent.set(sid,(excusedCountByStudent.get(sid)||0)+1);
+    }
 
     const stateOf=(period,kind)=>ctrlBy.get(Number(period))?.[`${kind}_state`]||'waiting';
     const endClosed=period=>stateOf(period,'end')==='closed';
 
     const status=(r,finalized,closed=false)=>{
       const done=!!finalized||!!closed;
+      if(r?.excused)return'공결';
       if(!r)return done?'결석':'미확인';
       if(r.start_ok&&r.end_ok)return'출석';
       if(!r.start_ok&&r.end_ok)return'지각';
@@ -510,11 +661,11 @@ async function renderTeacherAttendance(){
     };
     const statusKey=(r,finalized,closed=false)=>{
       const s=status(r,finalized,closed);
-      if(s==='출석')return'present';if(s==='지각')return'late';if(s==='조퇴')return'early';if(s==='결석')return'absent';return'absent';
+      if(s==='출석')return'present';if(s==='지각')return'late';if(s==='조퇴')return'early';if(s==='결석')return'absent';if(s==='공결')return'excused';return'absent';
     };
     const optionHtml=(r,finalized)=>{
       const cur=statusKey(r,finalized,true);
-      return [['present','출석'],['late','지각'],['early','조퇴'],['absent','결석']].map(([v,t])=>`<option value="${v}" ${cur===v?'selected':''}>${t}</option>`).join('');
+      return [['present','출석'],['late','지각'],['early','조퇴'],['absent','결석'],['excused','공결']].map(([v,t])=>`<option value="${v}" ${cur===v?'selected':''}>${t}</option>`).join('');
     };
 
     const gateButton=(period,kind)=>{
@@ -552,8 +703,10 @@ async function renderTeacherAttendance(){
       <div class="row"><button id="saveWords" class="primary" ${auto||week?.finalized?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div>
       <div id="taMsg" class="muted" style="margin-top:8px"></div>
       <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b>${anyGateOpen?' · <span style="color:#15803d">출석 입력 진행 중</span>':''}</div>
+      ${!auto?`<div class="card" style="margin-top:12px;background:#f8fbff"><h4 style="margin:0 0 8px">공결 일괄 반영</h4><div class="muted">승인된 공결 명단의 Excel(.xlsx/.xls), CSV 또는 TXT를 올리면 학번을 우선으로 자동 매칭합니다. <b>주차가 있으면 주차를 우선</b>하고, 주차가 없고 날짜가 있으면 이 과목의 1주차 시작일 <b>${esc(courseWeek1Dates[teacherCourse]||'미설정')}</b>을 기준으로 자동 계산합니다. 주차와 날짜가 모두 없을 때만 현재 ${w}주차를 사용합니다. 실제 반영은 해당 주차가 확정된 경우에만 됩니다.</div>${courseWeek1Dates[teacherCourse]?'':`<div class="warn" style="margin-top:8px">날짜로 주차를 자동 계산하려면 먼저 <b>학기·명단 → 1주차 수업 시작 날짜</b>를 저장하세요.</div>`}<div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="1" checked style="width:auto;min-height:auto">1교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="2" checked style="width:auto;min-height:auto">2교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="3" checked style="width:auto;min-height:auto">3교시</label><input id="excuseFile" type="file" accept=".xlsx,.xls,.csv,.txt" style="max-width:360px"><button id="analyzeExcuse">파일 분석</button></div><div id="excusePreview" class="muted" style="margin-top:10px"></div></div>`:''}
+      <div class="muted" style="margin:10px 0 6px">※ 학생 이름 옆 <b style="color:#dc2626">(숫자)</b>는 이번 학기 누적 <b>공결 교시 수</b>입니다. 공결이 0이면 표시하지 않습니다.</div>
       <div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${showAudit?'<th>기록</th>':''}${canEdit?'<th>수정</th>':''}</tr></thead><tbody>
-        ${(roster||[]).map(s=>`<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized,endClosed(p))}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`).join('')}
+        ${(roster||[]).map(s=>{const ec=excusedCountByStudent.get(Number(s.id))||0;return `<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}${ec?` <span style="color:#dc2626;font-weight:800">(${ec})</span>`:''}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized,endClosed(p))}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`}).join('')}
       </tbody></table></div>
       <div id="auditPanel" class="card hidden" style="margin-top:12px;background:#fafbff"></div>`;
 
@@ -634,7 +787,44 @@ async function renderTeacherAttendance(){
       };
     });
 
-    if(canEdit){
+    if(!auto){
+      let excusePreviewData=null;
+      const analyzeBtn=$('#analyzeExcuse');
+      if(analyzeBtn)analyzeBtn.onclick=async()=>{
+        const file=$('#excuseFile')?.files?.[0],preview=$('#excusePreview');
+        if(!file){preview.innerHTML='<span class="bad">공결 명단 파일을 먼저 선택하세요.</span>';return}
+        const defaults=[...$('#taBody').querySelectorAll('[data-excuse-default-period]:checked')].map(x=>Number(x.dataset.excuseDefaultPeriod));
+        if(!defaults.length){preview.innerHTML='<span class="bad">파일에 교시 정보가 없을 때 적용할 기본 교시를 하나 이상 선택하세요.</span>';return}
+        analyzeBtn.disabled=true;preview.textContent='파일을 분석하는 중…';
+        try{
+          const rows=await readExcuseFileRows(file);
+          excusePreviewData=buildExcusePreview(rows,roster,w,defaults,courseWeek1Dates[teacherCourse]||'');
+          const items=excusePreviewData.items||[],unmatched=excusePreviewData.unmatched||[];
+          const students=new Set(items.map(x=>x.student_id)).size;
+          const sample=items.slice(0,12).map(x=>`<tr><td>${esc(x.student_no||'-')}</td><td>${esc(x.name)}</td><td>${esc(x.date||'-')}</td><td>${x.week}주차</td><td>${x.period}교시</td><td>${esc(x.week_source||'')}</td><td>${esc(x.matched_by)}</td></tr>`).join('');
+          const bad=unmatched.slice(0,10).map(x=>`${x.row}행 ${esc(x.student_no||'')} ${esc(x.name||'')} (${esc(x.reason)})`).join('<br>');
+          preview.innerHTML=`<div class="ok"><b>${students}명 · ${items.length}개 교시</b>가 공결 반영 대상으로 매칭됐습니다.${unmatched.length?` · 미매칭 ${unmatched.length}행`:''}</div>${items.length?`<div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>학번</th><th>이름</th><th>공결일</th><th>주차</th><th>교시</th><th>주차 판단</th><th>학생 매칭</th></tr></thead><tbody>${sample}</tbody></table></div><button id="applyExcuseBulk" class="primary" style="margin-top:8px">공결 ${items.length}건 반영</button>`:''}${unmatched.length?`<details style="margin-top:8px"><summary>미매칭 ${unmatched.length}행 보기</summary><div class="muted" style="margin-top:6px">${bad}${unmatched.length>10?'<br>…':''}</div></details>`:''}`;
+          const apply=$('#applyExcuseBulk');
+          if(apply)apply.onclick=async()=>{
+            if(!excusePreviewData?.items?.length)return;
+            if(!confirm(`매칭된 ${students}명, ${items.length}개 교시를 공결로 변경할까요?\n공결은 결석 차감에서 제외되며 교수자 수정 이력에 남습니다.`))return;
+            apply.disabled=true;apply.textContent='공결 반영 중…';
+            let ok=0;const failures=[];
+            for(let i=0;i<items.length;i+=20){
+              const chunk=items.slice(i,i+20);
+              const res=await Promise.all(chunk.map(x=>isChinese(teacherCourse)
+                ?sb.rpc(`${cPrefix(teacherCourse)}_teacher_set_attendance_status`,{p_semester_id:sem.id,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'})
+                :sb.rpc('lg_teacher_set_attendance_status',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'})));
+              res.forEach((r,j)=>{const x=chunk[j];if(r.error||!r.data?.ok)failures.push(`${x.student_no||'-'} ${x.name} ${x.week}주차 ${x.period}교시: ${r.data?.message||r.error?.message||'실패'}`);else ok++});
+              apply.textContent=`공결 반영 중… ${Math.min(i+20,items.length)}/${items.length}`;
+            }
+            if(failures.length){preview.innerHTML=`<div class="warn"><b>${ok}건 반영 완료, ${failures.length}건 실패</b><br>${failures.slice(0,15).map(esc).join('<br>')}${failures.length>15?'<br>…':''}</div>`}else{msg($('#taMsg'),`공결 ${ok}건을 일괄 반영했습니다.`,true)}
+            load();
+          };
+        }catch(e){preview.innerHTML=`<span class="bad">파일 분석에 실패했습니다: ${esc(e?.message||String(e))}</span>`}
+        finally{analyzeBtn.disabled=false}
+      };
+
       $('#taBody').querySelectorAll('[data-save-att]').forEach(btn=>{
         btn.onclick=async()=>{
           const sid=Number(btn.dataset.saveAtt),st=(roster||[]).find(x=>Number(x.id)===sid);if(!st)return;
