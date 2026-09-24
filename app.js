@@ -534,6 +534,173 @@ async function readExcuseFileRows(file){
     return line.split(',').map(x=>x.trim().replace(/^"|"$/g,''));
   });
 }
+
+function normCourseName(v){
+  return String(v??'').trim().toLowerCase()
+    .replace(/[(){}\[\]<>〈〉《》「」『』"'’‘“”·ㆍ:：,，./\\\-_\s]/g,'');
+}
+function resolveExcuseCourse(raw){
+  const q=normCourseName(raw);
+  if(!q)return null;
+  const defs=[
+    {key:'chinese1',slot:'small1',fixed:['소형1','중국어1','small1','chinese1'],name:courseNames.chinese1},
+    {key:'chinese2',slot:'small2',fixed:['소형2','중국어2','small2','chinese2'],name:courseNames.chinese2},
+    {key:'large1',slot:'large1',fixed:['대형1','large1'],name:courseNames.large1},
+    {key:'large2',slot:'large2',fixed:['대형2','large2'],name:courseNames.large2}
+  ];
+  const matches=[];
+  for(const d of defs){
+    const aliases=[d.name,...d.fixed].map(normCourseName).filter(Boolean);
+    let score=0;
+    for(const a of aliases){
+      if(q===a)score=Math.max(score,1000+a.length);
+      else if(q.includes(a)||a.includes(q))score=Math.max(score,100+a.length);
+    }
+    if(score)matches.push({...d,score});
+  }
+  matches.sort((a,b)=>b.score-a.score);
+  if(!matches.length)return null;
+  if(matches.length>1&&matches[0].score===matches[1].score)return null;
+  return matches[0];
+}
+async function loadAllExcuseCourseContexts(sem){
+  const [c1,c2,lg]=await Promise.all([
+    sb.from('c1_students').select('id,student_no,name').eq('semester_id',sem.id).order('student_no'),
+    sb.from('c2_students').select('id,student_no,name').eq('semester_id',sem.id).order('student_no'),
+    sb.from('lg_students').select('id,student_no,name,slot').eq('semester_id',sem.id).order('student_no')
+  ]);
+  return {
+    chinese1:{key:'chinese1',slot:'small1',label:courseNames.chinese1||'중국어1',week1:courseWeek1Dates.chinese1||'',roster:c1.data||[]},
+    chinese2:{key:'chinese2',slot:'small2',label:courseNames.chinese2||'중국어2',week1:courseWeek1Dates.chinese2||'',roster:c2.data||[]},
+    large1:{key:'large1',slot:'large1',label:courseNames.large1||'대형1',week1:courseWeek1Dates.large1||'',roster:(lg.data||[]).filter(x=>x.slot==='large1')},
+    large2:{key:'large2',slot:'large2',label:courseNames.large2||'대형2',week1:courseWeek1Dates.large2||'',roster:(lg.data||[]).filter(x=>x.slot==='large2')}
+  };
+}
+function buildUnifiedExcusePreview(rows,contexts,defaultWeek,defaultPeriods){
+  const aliases={
+    course:['과목','과목명','교과목','교과목명','강의','강의명','수업','수업명','강좌','강좌명','course','coursename','subject'],
+    no:['학번','학생번호','studentno','studentnumber','studentid'],
+    name:['이름','성명','학생명','name'],
+    week:['주차','week','수업주차'],
+    date:['공결일','공결일자','결석일','결석일자','수업일','수업일자','해당일','대상일','날짜','일자','date'],
+    period:['교시','period','시간','수업교시'],
+    decision:['승인','승인여부','처리상태','상태','결과','인정여부']
+  };
+  const normAliases=k=>aliases[k].map(normExcuseHeader);
+  let headerAt=-1,cols={};
+  for(let r=0;r<Math.min(rows.length,15);r++){
+    const h=(rows[r]||[]).map(normExcuseHeader);
+    const find=k=>h.findIndex(x=>normAliases(k).includes(x));
+    const no=find('no'),nm=find('name'),co=find('course');
+    if(no>=0||nm>=0||co>=0){
+      headerAt=r;cols={course:co,no,name:nm,week:find('week'),date:find('date'),period:find('period'),decision:find('decision')};
+      break;
+    }
+  }
+
+  const courseMaps={};
+  for(const [k,ctx] of Object.entries(contexts)){
+    const byNo=new Map((ctx.roster||[]).filter(x=>x.student_no).map(x=>[String(x.student_no).trim().replace(/\.0$/,''),x]));
+    const byName=new Map();
+    (ctx.roster||[]).forEach(x=>{
+      const n=String(x.name||'').trim();if(!n)return;
+      const a=byName.get(n)||[];a.push(x);byName.set(n,a);
+    });
+    courseMaps[k]={byNo,byName};
+  }
+
+  const out=[],unmatched=[];const seen=new Set();
+  const start=headerAt>=0?headerAt+1:0;
+
+  for(let ri=start;ri<rows.length;ri++){
+    const row=rows[ri]||[];if(!row.some(x=>String(x).trim()))continue;
+    const cells=row.map(x=>String(x??'').trim());
+
+    let rawCourse='',no='',nm='',week=Number(defaultWeek),periods=[...defaultPeriods],decision='',date='',weekSource='현재 선택 주차';
+
+    if(headerAt>=0){
+      if(cols.course>=0)rawCourse=String(row[cols.course]??'').trim();
+      if(cols.no>=0)no=String(row[cols.no]??'').trim().replace(/\.0$/,'');
+      if(cols.name>=0)nm=String(row[cols.name]??'').trim();
+      if(cols.period>=0)periods=parseExcusePeriods(row[cols.period],defaultPeriods);
+      if(cols.decision>=0)decision=String(row[cols.decision]??'').trim();
+      if(cols.date>=0)date=parseExcuseDate(row[cols.date]);
+
+      if(!rawCourse){
+        const cands=cells.map(resolveExcuseCourse).filter(Boolean);
+        if(cands.length){
+          const keys=[...new Set(cands.map(x=>x.key))];
+          if(keys.length===1)rawCourse=cells.find(x=>resolveExcuseCourse(x)?.key===keys[0])||'';
+        }
+      }
+    }else{
+      const ci=cells.findIndex(x=>resolveExcuseCourse(x));
+      if(ci>=0)rawCourse=cells[ci];
+      const ni=cells.findIndex(x=>/^\d{7,12}(?:\.0)?$/.test(x));
+      if(ni>=0){no=cells[ni].replace(/\.0$/,'');nm=cells[ni+1]||cells.find((x,i)=>i!==ni&&/[가-힣]{2,}/.test(x))||''}
+      else nm=cells.find(x=>/[가-힣]{2,}/.test(x)&&!resolveExcuseCourse(x))||'';
+      date=cells.map(parseExcuseDate).find(Boolean)||'';
+    }
+
+    if(decision&&/(반려|불인정|거절|취소|reject|denied?)/i.test(decision))continue;
+
+    const resolved=resolveExcuseCourse(rawCourse);
+    if(!resolved){
+      unmatched.push({row:ri+1,course:rawCourse,student_no:no,name:nm,reason:rawCourse?'과목명 판단 불가':'과목명 없음'});
+      continue;
+    }
+    const ctx=contexts[resolved.key];
+    const maps=courseMaps[resolved.key];
+
+    const rawWeek=(headerAt>=0&&cols.week>=0)?String(row[cols.week]??'').trim():'';
+    if(rawWeek){
+      week=parseExcuseWeek(rawWeek,defaultWeek);weekSource='파일 주차';
+    }else if(date){
+      if(!ctx.week1){
+        unmatched.push({row:ri+1,course:ctx.label,student_no:no,name:nm,reason:'해당 과목 1주차 시작 날짜 미설정'});
+        continue;
+      }
+      const calc=excuseWeekFromDate(date,ctx.week1);
+      if(!calc||calc<1||calc>15){
+        unmatched.push({row:ri+1,course:ctx.label,student_no:no,name:nm,reason:`수업기간 밖 날짜 ${date}`});
+        continue;
+      }
+      week=calc;weekSource=`날짜 ${date}`;
+    }
+
+    if(week===1){
+      unmatched.push({row:ri+1,course:ctx.label,student_no:no,name:nm,reason:'1주차는 자동출석 고정'});
+      continue;
+    }
+    if(week<2||week>15){
+      unmatched.push({row:ri+1,course:ctx.label,student_no:no,name:nm,reason:`주차 범위 오류 (${week})`});
+      continue;
+    }
+
+    let st=no?maps.byNo.get(no):null,matchedBy='학번';
+    if(!st&&nm){
+      const arr=maps.byName.get(nm)||[];
+      if(arr.length===1){st=arr[0];matchedBy='이름'}
+    }
+    if(!st){
+      unmatched.push({
+        row:ri+1,course:ctx.label,student_no:no,name:nm,
+        reason:nm&&((maps.byName.get(nm)||[]).length>1)?'해당 과목 동명이인':'해당 과목 명단 불일치'
+      });
+      continue;
+    }
+
+    for(const p of periods){
+      const key=`${resolved.key}-${st.id}-${week}-${p}`;if(seen.has(key))continue;seen.add(key);
+      out.push({
+        course:resolved.key,course_slot:ctx.slot,course_label:ctx.label,
+        student_id:Number(st.id),student_no:st.student_no||no,name:st.name,
+        week:Number(week),period:Number(p),matched_by:matchedBy,date,week_source:weekSource
+      });
+    }
+  }
+  return {items:out,unmatched};
+}
 function buildExcusePreview(rows,roster,defaultWeek,defaultPeriods,week1Date=''){
   const aliases={
     no:['학번','학생번호','studentno','studentnumber','studentid'],
@@ -703,7 +870,7 @@ async function renderTeacherAttendance(){
       <div class="row"><button id="saveWords" class="primary" ${auto||week?.finalized?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div>
       <div id="taMsg" class="muted" style="margin-top:8px"></div>
       <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b>${anyGateOpen?' · <span style="color:#15803d">출석 입력 진행 중</span>':''}</div>
-      ${!auto?`<div class="card" style="margin-top:12px;background:#f8fbff"><h4 style="margin:0 0 8px">공결 일괄 반영</h4><div class="muted">승인된 공결 명단의 Excel(.xlsx/.xls), CSV 또는 TXT를 올리면 학번을 우선으로 자동 매칭합니다. <b>주차가 있으면 주차를 우선</b>하고, 주차가 없고 날짜가 있으면 이 과목의 1주차 시작일 <b>${esc(courseWeek1Dates[teacherCourse]||'미설정')}</b>을 기준으로 자동 계산합니다. 주차와 날짜가 모두 없을 때만 현재 ${w}주차를 사용합니다. 실제 반영은 해당 주차가 확정된 경우에만 됩니다.</div>${courseWeek1Dates[teacherCourse]?'':`<div class="warn" style="margin-top:8px">날짜로 주차를 자동 계산하려면 먼저 <b>학기·명단 → 1주차 수업 시작 날짜</b>를 저장하세요.</div>`}<div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="1" checked style="width:auto;min-height:auto">1교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="2" checked style="width:auto;min-height:auto">2교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="3" checked style="width:auto;min-height:auto">3교시</label><input id="excuseFile" type="file" accept=".xlsx,.xls,.csv,.txt" style="max-width:360px"><button id="analyzeExcuse">파일 분석</button></div><div id="excusePreview" class="muted" style="margin-top:10px"></div></div>`:''}
+      ${!auto?`<div class="card" style="margin-top:12px;background:#f8fbff"><h4 style="margin:0 0 8px">4과목 통합 공결 반영</h4><div class="muted">소형1·소형2·대형1·대형2 공결 자료를 <b>한 파일에 함께 넣어도 됩니다.</b> 파일의 <b>과목명</b>을 먼저 확인한 뒤 해당 과목 학생 명단에서 학번을 우선으로 자동 매칭하고, 날짜가 있으면 그 과목의 1주차 시작일을 기준으로 주차를 계산합니다. 과목명이 없거나 판단할 수 없는 행은 자동 반영하지 않고 <b>확인 필요</b>로 따로 보여줍니다. 실제 반영은 대상 주차가 이미 확정된 경우에만 됩니다.</div><div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="1" checked style="width:auto;min-height:auto">1교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="2" checked style="width:auto;min-height:auto">2교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="3" checked style="width:auto;min-height:auto">3교시</label><input id="excuseFile" type="file" accept=".xlsx,.xls,.csv,.txt" style="max-width:360px"><button id="analyzeExcuse">4과목 파일 분석</button></div><div id="excusePreview" class="muted" style="margin-top:10px"></div></div>`:''}
       <div class="muted" style="margin:10px 0 6px">※ 학생 이름 옆 <b style="color:#dc2626">(숫자)</b>는 이번 학기 누적 <b>공결 교시 수</b>입니다. 공결이 0이면 표시하지 않습니다.</div>
       <div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${showAudit?'<th>기록</th>':''}${canEdit?'<th>수정</th>':''}</tr></thead><tbody>
         ${(roster||[]).map(s=>{const ec=excusedCountByStudent.get(Number(s.id))||0;return `<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}${ec?` <span style="color:#dc2626;font-weight:800">(${ec})</span>`:''}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized,endClosed(p))}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`}).join('')}
@@ -792,37 +959,58 @@ async function renderTeacherAttendance(){
       const analyzeBtn=$('#analyzeExcuse');
       if(analyzeBtn)analyzeBtn.onclick=async()=>{
         const file=$('#excuseFile')?.files?.[0],preview=$('#excusePreview');
-        if(!file){preview.innerHTML='<span class="bad">공결 명단 파일을 먼저 선택하세요.</span>';return}
+        if(!file){preview.innerHTML='<span class="bad">공결 자료 파일을 먼저 선택하세요.</span>';return}
         const defaults=[...$('#taBody').querySelectorAll('[data-excuse-default-period]:checked')].map(x=>Number(x.dataset.excuseDefaultPeriod));
         if(!defaults.length){preview.innerHTML='<span class="bad">파일에 교시 정보가 없을 때 적용할 기본 교시를 하나 이상 선택하세요.</span>';return}
-        analyzeBtn.disabled=true;preview.textContent='파일을 분석하는 중…';
+        analyzeBtn.disabled=true;preview.textContent='4과목 명단과 파일을 분석하는 중…';
         try{
-          const rows=await readExcuseFileRows(file);
-          excusePreviewData=buildExcusePreview(rows,roster,w,defaults,courseWeek1Dates[teacherCourse]||'');
+          const [rows,contexts]=await Promise.all([readExcuseFileRows(file),loadAllExcuseCourseContexts(sem)]);
+          excusePreviewData=buildUnifiedExcusePreview(rows,contexts,w,defaults);
           const items=excusePreviewData.items||[],unmatched=excusePreviewData.unmatched||[];
-          const students=new Set(items.map(x=>x.student_id)).size;
-          const sample=items.slice(0,12).map(x=>`<tr><td>${esc(x.student_no||'-')}</td><td>${esc(x.name)}</td><td>${esc(x.date||'-')}</td><td>${x.week}주차</td><td>${x.period}교시</td><td>${esc(x.week_source||'')}</td><td>${esc(x.matched_by)}</td></tr>`).join('');
-          const bad=unmatched.slice(0,10).map(x=>`${x.row}행 ${esc(x.student_no||'')} ${esc(x.name||'')} (${esc(x.reason)})`).join('<br>');
-          preview.innerHTML=`<div class="ok"><b>${students}명 · ${items.length}개 교시</b>가 공결 반영 대상으로 매칭됐습니다.${unmatched.length?` · 미매칭 ${unmatched.length}행`:''}</div>${items.length?`<div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>학번</th><th>이름</th><th>공결일</th><th>주차</th><th>교시</th><th>주차 판단</th><th>학생 매칭</th></tr></thead><tbody>${sample}</tbody></table></div><button id="applyExcuseBulk" class="primary" style="margin-top:8px">공결 ${items.length}건 반영</button>`:''}${unmatched.length?`<details style="margin-top:8px"><summary>미매칭 ${unmatched.length}행 보기</summary><div class="muted" style="margin-top:6px">${bad}${unmatched.length>10?'<br>…':''}</div></details>`:''}`;
+          const studentKeys=new Set(items.map(x=>`${x.course}-${x.student_id}`));
+          const byCourse={};
+          for(const x of items){
+            if(!byCourse[x.course_label])byCourse[x.course_label]={students:new Set(),count:0};
+            byCourse[x.course_label].students.add(x.student_id);byCourse[x.course_label].count++;
+          }
+          const summary=Object.entries(byCourse).map(([label,v])=>`${esc(label)} ${v.students.size}명·${v.count}교시`).join(' / ');
+          const sample=items.slice(0,20).map(x=>`<tr><td>${esc(x.course_label)}</td><td>${esc(x.student_no||'-')}</td><td>${esc(x.name)}</td><td>${esc(x.date||'-')}</td><td>${x.week}주차</td><td>${x.period}교시</td><td>${esc(x.week_source||'')}</td><td>${esc(x.matched_by)}</td></tr>`).join('');
+          const bad=unmatched.slice(0,15).map(x=>`${x.row}행 ${esc(x.course||'과목 미확인')} · ${esc(x.student_no||'')} ${esc(x.name||'')} (${esc(x.reason)})`).join('<br>');
+          preview.innerHTML=`<div class="ok"><b>${studentKeys.size}명 · ${items.length}개 교시</b>가 4과목에서 자동 매칭됐습니다.${unmatched.length?` · 확인 필요 ${unmatched.length}행`:''}</div>${summary?`<div class="muted" style="margin-top:5px">${summary}</div>`:''}${items.length?`<div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>과목</th><th>학번</th><th>이름</th><th>공결일</th><th>주차</th><th>교시</th><th>주차 판단</th><th>학생 매칭</th></tr></thead><tbody>${sample}</tbody></table></div><button id="applyExcuseBulk" class="primary" style="margin-top:8px">4과목 공결 ${items.length}건 반영</button>`:''}${unmatched.length?`<details style="margin-top:8px"><summary>확인 필요 ${unmatched.length}행 보기</summary><div class="muted" style="margin-top:6px">${bad}${unmatched.length>15?'<br>…':''}</div></details>`:''}`;
+
           const apply=$('#applyExcuseBulk');
           if(apply)apply.onclick=async()=>{
             if(!excusePreviewData?.items?.length)return;
-            if(!confirm(`매칭된 ${students}명, ${items.length}개 교시를 공결로 변경할까요?\n공결은 결석 차감에서 제외되며 교수자 수정 이력에 남습니다.`))return;
-            apply.disabled=true;apply.textContent='공결 반영 중…';
+            if(!confirm(`자동 분류된 ${studentKeys.size}명, ${items.length}개 교시를 각 과목 출석명단에 공결로 반영할까요?\n과목명이 불명확한 행은 반영하지 않습니다.`))return;
+            apply.disabled=true;apply.textContent='4과목 공결 반영 중…';
             let ok=0;const failures=[];
             for(let i=0;i<items.length;i+=20){
               const chunk=items.slice(i,i+20);
-              const res=await Promise.all(chunk.map(x=>isChinese(teacherCourse)
-                ?sb.rpc(`${cPrefix(teacherCourse)}_teacher_set_attendance_status`,{p_semester_id:sem.id,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'})
-                :sb.rpc('lg_teacher_set_attendance_status',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'})));
-              res.forEach((r,j)=>{const x=chunk[j];if(r.error||!r.data?.ok)failures.push(`${x.student_no||'-'} ${x.name} ${x.week}주차 ${x.period}교시: ${r.data?.message||r.error?.message||'실패'}`);else ok++});
-              apply.textContent=`공결 반영 중… ${Math.min(i+20,items.length)}/${items.length}`;
+              const res=await Promise.all(chunk.map(x=>{
+                if(x.course==='chinese1')return sb.rpc('c1_teacher_set_attendance_status',{p_semester_id:sem.id,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'});
+                if(x.course==='chinese2')return sb.rpc('c2_teacher_set_attendance_status',{p_semester_id:sem.id,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'});
+                return sb.rpc('lg_teacher_set_attendance_status',{p_semester_id:sem.id,p_slot:x.course_slot,p_student_id:x.student_id,p_week:x.week,p_period:x.period,p_status:'excused'});
+              }));
+              res.forEach((r,j)=>{
+                const x=chunk[j];
+                if(r.error||!r.data?.ok)failures.push(`${x.course_label} · ${x.student_no||'-'} ${x.name} · ${x.week}주차 ${x.period}교시: ${r.data?.message||r.error?.message||'실패'}`);
+                else ok++;
+              });
+              apply.textContent=`4과목 공결 반영 중… ${Math.min(i+20,items.length)}/${items.length}`;
             }
-            if(failures.length){preview.innerHTML=`<div class="warn"><b>${ok}건 반영 완료, ${failures.length}건 실패</b><br>${failures.slice(0,15).map(esc).join('<br>')}${failures.length>15?'<br>…':''}</div>`}else{msg($('#taMsg'),`공결 ${ok}건을 일괄 반영했습니다.`,true)}
+            if(failures.length){
+              preview.innerHTML=`<div class="warn"><b>${ok}건 반영 완료, ${failures.length}건 실패</b><br>${failures.slice(0,20).map(esc).join('<br>')}${failures.length>20?'<br>…':''}</div>`;
+            }else{
+              msg($('#taMsg'),`4과목 공결 ${ok}건을 일괄 반영했습니다.`,true);
+              preview.innerHTML=`<div class="ok"><b>4과목 공결 ${ok}건 반영 완료</b></div>`;
+            }
             load();
           };
-        }catch(e){preview.innerHTML=`<span class="bad">파일 분석에 실패했습니다: ${esc(e?.message||String(e))}</span>`}
-        finally{analyzeBtn.disabled=false}
+        }catch(e){
+          preview.innerHTML=`<span class="bad">파일 분석에 실패했습니다: ${esc(e?.message||String(e))}</span>`;
+        }finally{
+          analyzeBtn.disabled=false;
+        }
       };
 
       $('#taBody').querySelectorAll('[data-save-att]').forEach(btn=>{
