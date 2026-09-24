@@ -495,7 +495,7 @@ async function ensureXlsxLib(){
   });
   return _xlsxLoaderPromise;
 }
-function normExcuseHeader(v){return String(v??'').trim().toLowerCase().replace(/[\s_\-()\[\]{}]/g,'')}
+function normExcuseHeader(v){return String(v??'').trim().toLowerCase().replace(/[\s_\-()\[\]{}/\\·ㆍ:：,，.]/g,'')}
 function parseExcuseWeek(v,def){const m=String(v??'').match(/(?:^|\D)(1[0-5]|[1-9])(?:\D|$)/);return m?Number(m[1]):Number(def)}
 function parseExcuseDate(v){
   const s=String(v??'').trim();if(!s)return'';
@@ -584,7 +584,9 @@ function buildUnifiedExcusePreview(rows,contexts,defaultWeek,defaultPeriods){
     week:['주차','week','수업주차'],
     date:['공결일','공결일자','결석일','결석일자','수업일','수업일자','수업일자교시','해당일','대상일','날짜','일자','date'],
     period:['교시','period','시간','수업교시'],
-    decision:['승인','승인여부','처리상태','상태','결과','인정여부']
+    decision:['승인','승인여부','처리상태','상태','결과','인정여부'],
+    requestStart:['시작일자','공결시작일','공결시작일자'],
+    requestEnd:['종료일자','공결종료일','공결종료일자']
   };
   const normAliases=k=>aliases[k].map(normExcuseHeader);
   let headerAt=-1,cols={};
@@ -603,7 +605,7 @@ function buildUnifiedExcusePreview(rows,contexts,defaultWeek,defaultPeriods){
           .filter(Boolean);
         if(sample.some(v=>/^[456]$/.test(v))){periodCol=dateCol+1;officialPeriod=true}
       }
-      headerAt=r;cols={course:co,no,name:nm,week:find('week'),date:dateCol,period:periodCol,decision:find('decision'),officialPeriod};
+      headerAt=r;cols={course:co,no,name:nm,week:find('week'),date:dateCol,period:periodCol,decision:find('decision'),requestStart:find('requestStart'),requestEnd:find('requestEnd'),officialPeriod};
       break;
     }
   }
@@ -628,7 +630,7 @@ function buildUnifiedExcusePreview(rows,contexts,defaultWeek,defaultPeriods){
     // 학교 공결 엑셀 맨 아래 '총건수 : [n]' 같은 합계 행은 학생 자료가 아닙니다.
     if(cells.some(x=>/^총\s*건수\s*:/i.test(x)))continue;
 
-    let rawCourse='',no='',nm='',week=Number(defaultWeek),periods=[...defaultPeriods],decision='',date='',weekSource='현재 선택 주차';
+    let rawCourse='',no='',nm='',week=Number(defaultWeek),periods=[...defaultPeriods],decision='',date='',requestStart='',requestEnd='',weekSource='현재 선택 주차';
 
     if(headerAt>=0){
       if(cols.course>=0)rawCourse=String(row[cols.course]??'').trim();
@@ -642,6 +644,8 @@ function buildUnifiedExcusePreview(rows,contexts,defaultWeek,defaultPeriods){
       }
       if(cols.decision>=0)decision=String(row[cols.decision]??'').trim();
       if(cols.date>=0)date=parseExcuseDate(row[cols.date]);
+      if(cols.requestStart>=0)requestStart=parseExcuseDate(row[cols.requestStart]);
+      if(cols.requestEnd>=0)requestEnd=parseExcuseDate(row[cols.requestEnd]);
 
       if(!rawCourse){
         const cands=cells.map(resolveExcuseCourse).filter(Boolean);
@@ -713,6 +717,8 @@ function buildUnifiedExcusePreview(rows,contexts,defaultWeek,defaultPeriods){
         course:resolved.key,course_slot:ctx.slot,course_label:ctx.label,
         student_id:Number(st.id),student_no:st.student_no||no,name:st.name,
         week:Number(week),period:Number(p),matched_by:matchedBy,date,week_source:weekSource,
+        request_start:requestStart,request_end:requestEnd,
+        request_period:(requestStart||requestEnd)?`${requestStart||'?'} ~ ${requestEnd||requestStart||'?'}`:'',
         source_period:cols.officialPeriod?String(row[cols.period]??'').trim():''
       });
     }
@@ -888,7 +894,7 @@ async function renderTeacherAttendance(){
       <div class="row"><button id="saveWords" class="primary" ${auto||week?.finalized?'disabled':''}>${auto?'1주차 단어 입력 불필요':'6개 단어 저장'}</button><button id="finalizeWeek" class="${week?.finalized?'danger':''}" ${auto?'disabled':''}>${auto?'1주차 자동 출석 고정':(week?.finalized?'주차 확정 해제':'이 주차 출석 확정')}</button></div>
       <div id="taMsg" class="muted" style="margin-top:8px"></div>
       <div class="q"><b>${w}주차 상태: ${auto?'자동 출석 확정':(week?.finalized?'확정됨':'아직 미확정')}</b>${anyGateOpen?' · <span style="color:#15803d">출석 입력 진행 중</span>':''}</div>
-      ${!auto?`<div class="card" style="margin-top:12px;background:#f8fbff"><h4 style="margin:0 0 8px">4과목 통합 공결 반영</h4><div class="muted">소형1·소형2·대형1·대형2 공결 자료를 <b>한 파일에 함께 넣어도 됩니다.</b> 파일의 <b>과목명</b>을 먼저 확인한 뒤 해당 과목 학생 명단에서 학번을 우선으로 자동 매칭하고, 날짜가 있으면 그 과목의 1주차 시작일을 기준으로 주차를 계산합니다. 인천대 공결 엑셀의 <b>4·5·6교시는 수업의 1·2·3교시</b>로 자동 변환합니다. 과목명이 없거나 판단할 수 없는 행은 자동 반영하지 않고 <b>확인 필요</b>로 따로 보여줍니다. 실제 반영은 대상 주차가 이미 확정된 경우에만 됩니다.</div><div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="1" checked style="width:auto;min-height:auto">1교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="2" checked style="width:auto;min-height:auto">2교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="3" checked style="width:auto;min-height:auto">3교시</label><input id="excuseFile" type="file" accept=".xlsx,.xls,.csv,.txt" style="max-width:360px"><button id="analyzeExcuse">4과목 파일 분석</button></div><div id="excusePreview" class="muted" style="margin-top:10px"></div></div>`:''}
+      ${!auto?`<div class="card" style="margin-top:12px;background:#f8fbff"><h4 style="margin:0 0 8px">4과목 통합 공결 반영</h4><div class="muted">소형1·소형2·대형1·대형2 공결 자료를 <b>한 파일에 함께 넣어도 됩니다.</b> 파일의 <b>과목명</b>을 먼저 확인한 뒤 해당 과목 학생 명단에서 학번을 우선으로 자동 매칭하고, 날짜가 있으면 그 과목의 1주차 시작일을 기준으로 주차를 계산합니다. 인천대 공결 엑셀의 <b>공결 요청 기간</b>은 확인용으로 함께 보여주고, 실제 출석 반영은 <b>교과목명 + 수업일자/교시</b>를 기준으로 처리합니다. 원자료의 <b>4·5·6교시는 수업의 1·2·3교시</b>로 자동 변환합니다. 과목명이 없거나 판단할 수 없는 행은 자동 반영하지 않고 <b>확인 필요</b>로 따로 보여줍니다. 실제 반영은 대상 주차가 이미 확정된 경우에만 됩니다.</div><div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="1" checked style="width:auto;min-height:auto">1교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="2" checked style="width:auto;min-height:auto">2교시</label><label style="display:flex;align-items:center;gap:5px"><input type="checkbox" data-excuse-default-period="3" checked style="width:auto;min-height:auto">3교시</label><input id="excuseFile" type="file" accept=".xlsx,.xls,.csv,.txt" style="max-width:360px"><button id="analyzeExcuse">4과목 파일 분석</button></div><div id="excusePreview" class="muted" style="margin-top:10px"></div></div>`:''}
       <div class="muted" style="margin:10px 0 6px">※ 학생 이름 옆 <b style="color:#dc2626">(숫자)</b>는 이번 학기 누적 <b>공결 교시 수</b>입니다. 공결이 0이면 표시하지 않습니다.</div>
       <div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>1교시</th><th>2교시</th><th>3교시</th>${showAudit?'<th>기록</th>':''}${canEdit?'<th>수정</th>':''}</tr></thead><tbody>
         ${(roster||[]).map(s=>{const ec=excusedCountByStudent.get(Number(s.id))||0;return `<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}${ec?` <span style="color:#dc2626;font-weight:800">(${ec})</span>`:''}</td>${[1,2,3].map(p=>{const r=by.get(`${s.id}-${p}`);return canEdit?`<td><select data-att-status="${s.id}-${p}" style="min-width:82px">${optionHtml(r,true)}</select></td>`:`<td>${status(r,week?.finalized,endClosed(p))}</td>`}).join('')}${showAudit?`<td><button class="smallbtn" data-audit-att="${s.id}">기록 보기</button></td>`:''}${canEdit?`<td><button class="smallbtn" data-save-att="${s.id}">수정 저장</button></td>`:''}</tr>`}).join('')}
@@ -992,9 +998,9 @@ async function renderTeacherAttendance(){
             byCourse[x.course_label].students.add(x.student_id);byCourse[x.course_label].count++;
           }
           const summary=Object.entries(byCourse).map(([label,v])=>`${esc(label)} ${v.students.size}명·${v.count}교시`).join(' / ');
-          const sample=items.slice(0,20).map(x=>`<tr><td>${esc(x.course_label)}</td><td>${esc(x.student_no||'-')}</td><td>${esc(x.name)}</td><td>${esc(x.date||'-')}</td><td>${x.week}주차</td><td>${x.period}교시${x.source_period?` <span class="muted">(원자료 ${esc(x.source_period)}교시)</span>`:''}</td><td>${esc(x.week_source||'')}</td><td>${esc(x.matched_by)}</td></tr>`).join('');
+          const sample=items.slice(0,20).map(x=>`<tr><td>${esc(x.course_label)}</td><td>${esc(x.student_no||'-')}</td><td>${esc(x.name)}</td><td>${esc(x.request_period||'-')}</td><td>${esc(x.date||'-')}</td><td>${x.week}주차</td><td>${x.period}교시${x.source_period?` <span class="muted">(원자료 ${esc(x.source_period)}교시)</span>`:''}</td><td>${esc(x.week_source||'')}</td><td>${esc(x.matched_by)}</td></tr>`).join('');
           const bad=unmatched.slice(0,15).map(x=>`${x.row}행 ${esc(x.course||'과목 미확인')} · ${esc(x.student_no||'')} ${esc(x.name||'')} (${esc(x.reason)})`).join('<br>');
-          preview.innerHTML=`<div class="ok"><b>${studentKeys.size}명 · ${items.length}개 교시</b>가 4과목에서 자동 매칭됐습니다.${unmatched.length?` · 확인 필요 ${unmatched.length}행`:''}</div>${summary?`<div class="muted" style="margin-top:5px">${summary}</div>`:''}${items.length?`<div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>과목</th><th>학번</th><th>이름</th><th>공결일</th><th>주차</th><th>교시</th><th>주차 판단</th><th>학생 매칭</th></tr></thead><tbody>${sample}</tbody></table></div><button id="applyExcuseBulk" class="primary" style="margin-top:8px">4과목 공결 ${items.length}건 반영</button>`:''}${unmatched.length?`<details style="margin-top:8px"><summary>확인 필요 ${unmatched.length}행 보기</summary><div class="muted" style="margin-top:6px">${bad}${unmatched.length>15?'<br>…':''}</div></details>`:''}`;
+          preview.innerHTML=`<div class="ok"><b>${studentKeys.size}명 · ${items.length}개 교시</b>가 4과목에서 자동 매칭됐습니다.${unmatched.length?` · 확인 필요 ${unmatched.length}행`:''}</div>${summary?`<div class="muted" style="margin-top:5px">${summary}</div>`:''}${items.length?`<div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>과목</th><th>학번</th><th>이름</th><th>공결 요청 기간</th><th>실제 수업일</th><th>주차</th><th>교시</th><th>주차 판단</th><th>학생 매칭</th></tr></thead><tbody>${sample}</tbody></table></div><button id="applyExcuseBulk" class="primary" style="margin-top:8px">4과목 공결 ${items.length}건 반영</button>`:''}${unmatched.length?`<details style="margin-top:8px"><summary>확인 필요 ${unmatched.length}행 보기</summary><div class="muted" style="margin-top:6px">${bad}${unmatched.length>15?'<br>…':''}</div></details>`:''}`;
 
           const apply=$('#applyExcuseBulk');
           if(apply)apply.onclick=async()=>{
