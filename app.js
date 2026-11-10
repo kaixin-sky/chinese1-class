@@ -379,7 +379,7 @@ async function loadTeacherCourseNames(){
 function applyTeacherCourseTabs(){$('#tQuizTab').classList.toggle('hidden',!isChinese(teacherCourse));$('#tMidtermTab').classList.toggle('hidden',isChinese(teacherCourse));$('#tPledgeTab').classList.toggle('hidden',isChinese(teacherCourse))}
 function switchTeacherPane(tab){$$('#ttabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.tpane').forEach(x=>x.classList.add('hidden'));const p=$('#t'+tab);if(p)p.classList.remove('hidden')}
 $$('#ttabs button').forEach(b=>b.onclick=()=>{currentTeacherTab=b.dataset.tab;clearInterval(homeworkQrTimer);homeworkQrTimer=null;switchTeacherPane(currentTeacherTab);renderTeacherTab(currentTeacherTab)});
-function renderTeacherTab(tab){if(!selectedSemester())return;const map={semester:renderTeacherSemester,qr:renderTeacherQR,attendance:renderTeacherAttendance,quiz:renderTeacherQuiz,midterm:renderTeacherMidterm,final:renderTeacherFinal,homework:renderTeacherHomework,pledge:renderTeacherPledge,grades:renderTeacherGrades};if(map[tab])map[tab]()}
+function renderTeacherTab(tab){if(!selectedSemester())return;const map={semester:renderTeacherSemester,qr:renderTeacherQR,attendance:renderTeacherAttendance,quiz:renderTeacherQuiz,midterm:renderTeacherMidterm,final:renderTeacherFinal,homework:renderTeacherHomework,pledge:renderTeacherPledge,grades:renderTeacherGrades};if(!map[tab])return;try{const r=map[tab]();if(r&&typeof r.catch==='function')r.catch(e=>{console.error(e);const pane=$('#t'+tab);if(pane)pane.innerHTML=`<div class="card bad"><b>화면을 불러오지 못했습니다.</b><br>${esc(e?.message||String(e))}</div>`})}catch(e){console.error(e);const pane=$('#t'+tab);if(pane)pane.innerHTML=`<div class="card bad"><b>화면을 불러오지 못했습니다.</b><br>${esc(e?.message||String(e))}</div>`}}
 
 async function getRoster(){
   const sem=selectedSemester();
@@ -1086,22 +1086,52 @@ async function renderTeacherAttendance(){
 async function renderTeacherQuiz(){
   if(!isChinese(teacherCourse)){currentTeacherTab='midterm';switchTeacherPane('midterm');return renderTeacherMidterm()}
   const pane=$('#tquiz'),sem=selectedSemester(),p=cPrefix(teacherCourse);
-  const [{data:qs,error},{data:roster},{data:subs}]=await Promise.all([
-    sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round'),
-    sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id).order('student_no'),
-    sb.from(`${p}_quiz_submissions`).select('student_id,quiz_id,submitted_at').eq('semester_id',sem.id)
-  ]);
+  pane.innerHTML='<div class="card">듣기평가 불러오는 중…</div>';
+  const {data:qs,error}=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
-  const total=(roster||[]).length,byQuiz=new Map();
-  for(const q of qs||[])byQuiz.set(q.id,new Set((subs||[]).filter(x=>Number(x.quiz_id)===Number(q.id)).map(x=>Number(x.student_id))));
   const maxRound=(qs||[]).reduce((m,q)=>Math.max(m,q.round),0);
-  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 시험이 끝날 때마다 해당 차수의 <b>답안 제출 마감</b>을 눌러주세요. 마감 전에는 학생에게 점수·정답이 공개되지 않습니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(qs||[]).map(q=>quizEditor(q,(byQuiz.get(q.id)||new Set()).size,total)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;
+  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 시험이 끝날 때마다 해당 차수의 <b>답안 제출 마감</b>을 눌러주세요. 마감 전에는 학생에게 점수·정답이 공개되지 않습니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(qs||[]).map(q=>quizEditor(q,null,null)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;
   $('#addQuizBtn').onclick=async()=>{const {error}=await sb.from(`${p}_quizzes`).insert({semester_id:sem.id,round:maxRound+1,answer_key:['A','A','A','A','A'],is_open:false,counted:true});if(error)alert(error.message);else renderTeacherQuiz()};
   pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const {error}=await sb.from(`${p}_quizzes`).update({answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked}).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';setTimeout(()=>btn.textContent='설정 저장',900)}});
-  pane.querySelectorAll('[data-missing-quiz]').forEach(btn=>btn.onclick=()=>{const qid=Number(btn.dataset.missingQuiz),done=byQuiz.get(qid)||new Set(),missing=(roster||[]).filter(st=>!done.has(Number(st.id)));const box=$(`#missingQuiz${qid}`);box.innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>'});
-  pane.querySelectorAll('[data-close-quiz]').forEach(btn=>btn.onclick=async()=>{const qid=Number(btn.dataset.closeQuiz),round=Number(btn.dataset.round),done=(byQuiz.get(qid)||new Set()).size;if(!confirm(`제${round}차 답안 제출을 마감할까요?\n현재 제출 ${done}/${total}명입니다.\n마감 후에는 학생이 추가 제출할 수 없습니다.`))return;btn.disabled=true;const {data,error}=await sb.rpc(`${p}_close_quiz`,{p_semester_id:sem.id,p_quiz_id:qid});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');btn.disabled=false;return}renderTeacherQuiz()});
+  // Attach click handlers before network requests; failed status requests must not leave inert buttons.
+  let roster=[],subs=[],statusReady=false,statusError='';
+  const byQuiz=new Map();
+  pane.querySelectorAll('[data-missing-quiz]').forEach(btn=>btn.onclick=()=>{
+    const qid=Number(btn.dataset.missingQuiz),box=pane.querySelector(`[id="missingQuiz${qid}"]`);
+    if(!box)return;
+    if(!statusReady){box.innerHTML=`<div class="notice bad">${esc(statusError||'제출현황을 불러오는 중입니다. 잠시 후 다시 눌러주세요.')}</div>`;return}
+    const done=byQuiz.get(qid)||new Set(),missing=roster.filter(st=>!done.has(Number(st.id)));
+    box.innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>';
+  });
+  pane.querySelectorAll('[data-close-quiz]').forEach(btn=>btn.onclick=async()=>{
+    if(!statusReady){alert(statusError||'제출현황을 불러오는 중입니다. 잠시 후 다시 시도해주세요.');return}
+    const qid=Number(btn.dataset.closeQuiz),round=Number(btn.dataset.round),done=(byQuiz.get(qid)||new Set()).size,total=roster.length;
+    if(!confirm(`제${round}차 답안 제출을 마감할까요?\n현재 제출 ${done}/${total}명입니다.\n마감 후에는 학생이 추가 제출할 수 없습니다.`))return;
+    btn.disabled=true;
+    try{
+      const {data,error}=await sb.rpc(`${p}_close_quiz`,{p_semester_id:sem.id,p_quiz_id:qid});
+      if(error||!data?.ok)throw new Error(data?.message||error?.message||'마감 실패');
+      await renderTeacherQuiz();
+    }catch(e){alert(e?.message||String(e));btn.disabled=false}
+  });
+  try{
+    const rr=await Promise.all([
+      sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id).order('student_no'),
+      sb.from(`${p}_quiz_submissions`).select('student_id,quiz_id,submitted_at').eq('semester_id',sem.id)
+    ]);
+    if(rr[0].error)throw rr[0].error;
+    if(rr[1].error)throw rr[1].error;
+    roster=rr[0].data||[];subs=rr[1].data||[];
+    for(const q of qs||[])byQuiz.set(Number(q.id),new Set(subs.filter(x=>Number(x.quiz_id)===Number(q.id)).map(x=>Number(x.student_id))));
+    statusReady=true;
+    for(const q of qs||[]){const st=pane.querySelector(`[data-qstatus="${q.id}"]`);if(st)st.textContent=q.is_closed?'제출 마감됨':`제출 ${(byQuiz.get(Number(q.id))||new Set()).size}/${roster.length}`}
+  }catch(e){
+    console.error('quiz status load failed',e);
+    statusError=`제출현황 확인 실패: ${e?.message||String(e)}`;
+    pane.querySelectorAll('[data-qstatus]').forEach(x=>x.textContent='제출현황 확인 실패');
+  }
 }
-function quizEditor(q,submitted,total){const vals=[...q.answer_key];while(vals.length<6)vals.push('A');return `<div class="card"><div class="row"><h3 style="margin:0">제${q.round}차</h3><div class="toolbar"><b>${q.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button data-missing-quiz="${q.id}">미제출자 보기</button>${q.is_closed?'':`<button data-close-quiz="${q.id}" data-round="${q.round}" class="danger">제${q.round}차 답안 제출 마감</button>`}</div></div><div id="missingQuiz${q.id}" style="margin-top:8px"></div><div class="toolbar" style="margin-top:10px"><label>문항 수<select data-qcount><option value="5" ${q.answer_key.length===5?'selected':''}>5</option><option value="6" ${q.answer_key.length===6?'selected':''}>6</option></select></label><label style="display:flex;align-items:center;gap:6px"><input data-qopen type="checkbox" style="width:auto;min-height:auto" ${q.is_open?'checked':''} ${q.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input data-qcounted type="checkbox" style="width:auto;min-height:auto" ${q.counted?'checked':''}> 중간고사 반영</label></div><div class="ansgrid" style="margin-top:10px">${vals.map((a,i)=>`<label>${i+1}번${i===5?' (6문항 시)':''}<select data-qans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button data-save-quiz="${q.id}" class="primary" style="margin-top:10px">설정 저장</button></div>`}
+function quizEditor(q,submitted,total){const vals=[...q.answer_key];while(vals.length<6)vals.push('A');const status=q.is_closed?'제출 마감됨':(submitted==null?'제출현황 확인 중…':`제출 ${submitted}/${total}`);return `<div class="card"><div class="row"><h3 style="margin:0">제${q.round}차</h3><div class="toolbar"><b data-qstatus="${q.id}">${status}</b><button data-missing-quiz="${q.id}">미제출자 보기</button>${q.is_closed?'':`<button data-close-quiz="${q.id}" data-round="${q.round}" class="danger">제${q.round}차 답안 제출 마감</button>`}</div></div><div id="missingQuiz${q.id}" style="margin-top:8px"></div><div class="toolbar" style="margin-top:10px"><label>문항 수<select data-qcount><option value="5" ${q.answer_key.length===5?'selected':''}>5</option><option value="6" ${q.answer_key.length===6?'selected':''}>6</option></select></label><label style="display:flex;align-items:center;gap:6px"><input data-qopen type="checkbox" style="width:auto;min-height:auto" ${q.is_open?'checked':''} ${q.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input data-qcounted type="checkbox" style="width:auto;min-height:auto" ${q.counted?'checked':''}> 중간고사 반영</label></div><div class="ansgrid" style="margin-top:10px">${vals.map((a,i)=>`<label>${i+1}번${i===5?' (6문항 시)':''}<select data-qans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button data-save-quiz="${q.id}" class="primary" style="margin-top:10px">설정 저장</button></div>`}
 
 async function renderTeacherFinal(){if(isChinese(teacherCourse))return renderTeacherChineseFinal();return renderTeacherLargeFinal()}
 async function renderTeacherChineseFinal(){
