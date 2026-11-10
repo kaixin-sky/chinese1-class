@@ -284,7 +284,7 @@ async function renderLargeFinal(){
   clearInterval(draftTimer);draftTimer=null;largeExamAccessCode='';
   const {data,error}=await sb.rpc('lg_get_final_status',{p_token:studentToken});
   if(error||!data?.ok){$('#finalPane').innerHTML='<div class="card bad">기말고사 상태를 확인할 수 없습니다.</div>';return}
-  if(data.submitted){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="ok">최종 제출 완료${data.submitted_at?` · ${esc(fmtDT(data.submitted_at))}`:''}</div><div class="muted" style="margin-top:8px">${data.final_score==null?'채점 전입니다.':`현재 반영 점수 ${fmt(data.final_score)} / 30`}</div></div>`;return}
+  if(data.submitted){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="ok">최종 제출 완료${data.submitted_at?` · ${esc(fmtDT(data.submitted_at))}`:''}</div><div class="muted" style="margin-top:8px">${!data.results_published?'기말고사 점수는 교수자 최종 승인 후 공개됩니다.':`최종 기말고사 점수 ${data.final_score==null?'-':fmt(data.final_score)} / 30`}</div></div>`;return}
   if(data.closed){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="bad">기말고사 답안 제출이 마감되었습니다. 임시저장 및 최종제출을 할 수 없습니다.</div></div>`;return}
   if(!data.open){$('#finalPane').innerHTML=`<div class="card">${examLaptopGuide(data.needs_code)}<div class="muted">기말고사가 아직 공개되지 않았습니다.</div></div>`;return}
   $('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="notice">노트북으로 답안을 작성합니다. 답안은 임시저장할 수 있고 최종 제출 후에는 수정할 수 없습니다.</div>${data.needs_code?'<label style="display:block;margin-top:12px">시험 접속코드<input id="examAccessCode" autocomplete="off"></label>':''}<button id="openEssay" class="primary" style="margin-top:10px">문제 열기</button><div id="essayStartMsg" class="muted" style="margin-top:8px"></div></div>`;
@@ -345,7 +345,7 @@ async function renderStudentScores(){
     $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">듣기평가 → 중간</div><div class="score">${fmt(data.midterm)} / 30</div><div>${data.quiz_got}/${data.quiz_max}</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods} · 공결 ${data.excused_periods||0}</div></div><div class="q"><div class="muted">과제</div><div class="score">${fmt(data.homework_score)} / 20</div><div>${data.homework_done}/${data.homework_total}</div></div><div class="q"><div class="muted">기말고사</div><div class="score">${fmt(data.final_score)} / 30</div><div>원점수 ${data.final_raw}/20</div></div></div><div class="q"><div class="muted">현재 총점</div><div class="score">${fmt(data.total)} / 100</div></div></div>`;
   } else {
     const {data}=await sb.rpc('lg_get_student_summary',{p_token:studentToken});if(!data?.ok)return;
-    $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">중간발표</div><div class="score">${fmt(data.midterm)} / 30</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods} · 공결 ${data.excused_periods||0}</div></div><div class="q"><div class="muted">기말 과제</div><div class="score">${fmt(data.homework_score)} / 20</div></div><div class="q"><div class="muted">논술형 기말</div><div class="score">${fmt(data.final_score)} / 30</div><div>${data.final_submitted?'제출 완료':'미제출'}</div></div></div><div class="q"><div class="muted">현재 총점</div><div class="score">${fmt(data.total)} / 100</div></div></div>`;
+    $('#scoresPane').innerHTML=`<div class="card"><h3 class="section-title">내 성적</h3><div class="grid g2"><div class="q"><div class="muted">중간발표</div><div class="score">${fmt(data.midterm)} / 30</div></div><div class="q"><div class="muted">출석</div><div class="score">${fmt(data.attendance,3)} / 20</div><div>결석 ${data.absent_periods} · 지각 ${data.late_periods} · 조퇴 ${data.early_periods} · 공결 ${data.excused_periods||0}</div></div><div class="q"><div class="muted">기말 과제</div><div class="score">${fmt(data.homework_score)} / 20</div></div><div class="q"><div class="muted">논술형 기말</div><div class="score">${data.results_published?fmt(data.final_score)+' / 30':'비공개'}</div><div>${data.final_submitted?'제출 완료':'미제출'} · ${data.results_published?'최종 승인 완료':'교수자 최종 승인 대기'}</div></div></div><div class="q"><div class="muted">최종 총점</div><div class="score">${data.results_published?fmt(data.total)+' / 100':'교수자 최종 승인 후 공개'}</div></div></div>`;
   }
 }
 
@@ -1226,6 +1226,9 @@ async function renderTeacherChineseGrades(){
     sb.from(`${p}_students`).select('id,student_no').eq('semester_id',sem.id)
   ]);
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
+  const {data:releaseStatus,error:releaseError}=await sb.from('lg_final_exam').select('results_published').eq('semester_id',sem.id).eq('slot',sl).maybeSingle();
+  if(releaseError){pane.innerHTML=`<div class="card bad">성적 공개 상태를 확인하지 못했습니다: ${esc(releaseError.message)}</div>`;return}
+  const published=releaseStatus?.results_published===true;
   const noMap=new Map((roster||[]).map(x=>[Number(x.id),x.student_no||'']));
   const rows=(data||[]).map(r=>({...r,student_no:noMap.get(Number(r.student_id))||''}));
   const avg=k=>rows.length?rows.reduce((s,r)=>s+Number(r[k]||0),0)/rows.length:0;
@@ -1241,10 +1244,24 @@ async function renderTeacherLargeGrades(){
     sb.from('lg_students').select('id,student_no').eq('semester_id',sem.id).eq('slot',sl)
   ]);
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
+  const {data:releaseStatus,error:releaseError}=await sb.from('lg_final_exam').select('results_published').eq('semester_id',sem.id).eq('slot',sl).maybeSingle();
+  if(releaseError){pane.innerHTML=`<div class="card bad">성적 공개 상태를 확인하지 못했습니다: ${esc(releaseError.message)}</div>`;return}
+  const published=releaseStatus?.results_published===true;
   const noMap=new Map((roster||[]).map(x=>[Number(x.id),x.student_no||'']));
   const rows=(data||[]).map(r=>({...r,student_no:noMap.get(Number(r.student_id))||''}));
   const avg=k=>rows.length?rows.reduce((s,r)=>s+Number(r[k]||0),0)/rows.length:0;
   pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 성적</h3><div class="muted">중간발표 30 + 출석 20 + 과제 20 + 논술형 기말 30 = 100점</div></div><button id="downloadCsv" class="primary">CSV 내려받기</button></div><div class="grid g4" style="margin-top:12px"><div class="stat"><div class="muted">학생 수</div><div class="n">${rows.length}명</div></div><div class="stat"><div class="muted">총점 평균</div><div class="n">${fmt(avg('total'))}</div></div><div class="stat"><div class="muted">중간 평균</div><div class="n">${fmt(avg('midterm'))}</div></div><div class="stat"><div class="muted">기말 평균</div><div class="n">${fmt(avg('final_score'))}</div></div></div></div><div class="card"><div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>중간/30</th><th>결석</th><th>지각</th><th>조퇴</th><th>출석/20</th><th>과제/20</th><th>기말 제출</th><th>AI점수</th><th>교수자점수</th><th>기말/30</th><th>총점/100</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.student_no||'-')}</td><td>${esc(r.name)}</td><td>${fmt(r.midterm)}</td><td>${r.absent_periods}</td><td>${r.late_periods}</td><td>${r.early_periods}</td><td>${fmt(r.attendance,3)}</td><td>${fmt(r.homework_score)}</td><td>${r.final_submitted?'✅':'-'}</td><td>${r.ai_score??'-'}</td><td>${r.teacher_score??'-'}</td><td>${fmt(r.final_score)}</td><td><b>${fmt(r.total)}</b></td></tr>`).join('')}</tbody></table></div></div>`;
+  const releaseBox=document.createElement('div');
+  releaseBox.className='card';
+  releaseBox.innerHTML=`<div class="row"><div><h3 class="section-title">기말·최종 성적 공개 승인</h3><div class="muted">출석·과제·중간발표 점수는 계속 확인할 수 있습니다. 기말 점수와 총점만 아래 승인 후 학생에게 공개됩니다.</div><div style="margin-top:8px"><b>${published?'현재 상태: 학생에게 기말·최종 성적 공개 중':'현재 상태: 교수자에게만 기말·최종 성적 표시'}</b></div></div><button id="approveLargeGrades" class="${published?'danger':'primary'}">${published?'공개 취소(비공개 전환)':'최종 승인 · 학생에게 공개'}</button></div><div id="gradeApprovalMsg" class="muted"></div>`;
+  pane.insertBefore(releaseBox,pane.firstChild);
+  $('#approveLargeGrades').onclick=async()=>{
+    const notice=published?'이미 공개된 기말고사 점수와 최종 총점을 다시 비공개로 전환하시겠습니까?':'AI 제안 점수 및 교수자 점수를 확인하고, 이 강좌 학생 전체에게 기말고사 점수와 최종 총점을 공개하시겠습니까?';
+    if(!confirm(notice))return;
+    const {data,error}=await sb.rpc('lg_set_results_published',{p_semester_id:sem.id,p_slot:sl,p_published:!published});
+    if(error||!data?.ok){msg($('#gradeApprovalMsg'),data?.message||error?.message||'성적 공개 상태 변경 실패');return}
+    renderTeacherLargeGrades();
+  };
   $('#downloadCsv').onclick=()=>downloadLargeCsv(rows,`${sem.name}_${courseLabel(teacherCourse)}`)
 }
 function downloadLargeCsv(rows,name){const head=['학번','이름','중간발표30','결석교시','지각','조퇴','출석20','과제20','기말제출','AI점수','교수자점수','기말30','총점100'];const lines=[head.join(','),...rows.map(r=>[r.student_no||'',csvCell(r.name),fmt(r.midterm),r.absent_periods,r.late_periods,r.early_periods,fmt(r.attendance,3),fmt(r.homework_score),r.final_submitted?'Y':'N',r.ai_score??'',r.teacher_score??'',fmt(r.final_score),fmt(r.total)].join(','))];saveCsv(lines,name)}
