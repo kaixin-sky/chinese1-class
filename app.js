@@ -1087,8 +1087,23 @@ async function renderTeacherQuiz(){
   if(!isChinese(teacherCourse)){currentTeacherTab='midterm';switchTeacherPane('midterm');return renderTeacherMidterm()}
   const pane=$('#tquiz'),sem=selectedSemester(),p=cPrefix(teacherCourse);
   pane.innerHTML='<div class="card">듣기평가 불러오는 중…</div>';
-  const {data:qs,error}=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');
+  let {data:qs,error}=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
+  // A new semester/course starts with round 1, with the same separate controls as all later rounds.
+  // Never alter any existing rounds or their submission/closure data.
+  if(!qs?.length){
+    const initial=await sb.from(`${p}_quizzes`).insert({semester_id:sem.id,round:1,answer_key:['A','A','A','A','A'],is_open:false,is_closed:false,counted:true});
+    if(initial.error){
+      // If another session created round 1 at the same time, read again before reporting failure.
+      const retry=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');
+      if(retry.error||!retry.data?.length){pane.innerHTML=`<div class="card bad">제1차 듣기평가 생성 실패: ${esc(initial.error.message)}. 데이터베이스 권한을 확인해주세요.</div>`;return}
+      qs=retry.data;
+    }else{
+      const reread=await sb.from(`${p}_quizzes`).select('*').eq('semester_id',sem.id).order('round');
+      if(reread.error){pane.innerHTML=`<div class="card bad">${esc(reread.error.message)}</div>`;return}
+      qs=reread.data||[];
+    }
+  }
   const maxRound=(qs||[]).reduce((m,q)=>Math.max(m,q.round),0);
   pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 시험이 끝날 때마다 해당 차수의 <b>답안 제출 마감</b>을 눌러주세요. 마감 전에는 학생에게 점수·정답이 공개되지 않습니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(qs||[]).map(q=>quizEditor(q,null,null)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;
   $('#addQuizBtn').onclick=async()=>{const {error}=await sb.from(`${p}_quizzes`).insert({semester_id:sem.id,round:maxRound+1,answer_key:['A','A','A','A','A'],is_open:false,counted:true});if(error)alert(error.message);else renderTeacherQuiz()};
