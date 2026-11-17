@@ -8,6 +8,8 @@ const COURSES={
   large2:{label:'대형2',defaultName:'대형2',type:'large',slot:'large2'}
 };
 let sb=null, selectedStudentCourse='chinese1', student=null, studentToken=null;
+let studentQrContext=null, studentQrCode=null, invalidStudentQr=false;
+const teacherEntryUrlPromises=new Map();
 let semesters=[], teacherSemesterId=null, teacherCourse='chinese1', currentTeacherTab='semester';
 let courseNames={chinese1:'중국어1',chinese2:'중국어2',large1:'대형1',large2:'대형2'};
 let courseWeek1Dates={chinese1:'',chinese2:'',large1:'',large2:''}, homeworkQrTimer=null, draftTimer=null, largeExamAccessCode='';
@@ -27,7 +29,7 @@ function setMode(m){$('#studentSection').classList.toggle('hidden',m!=='s');$('#
 $('#studentMode').onclick=()=>setMode('s');$('#teacherMode').onclick=()=>setMode('t');
 function baseUrl(){return new URL(location.origin+location.pathname)}
 const STUDENT_SITE_URL='https://kaixin-sky.github.io/chinese1-class/';
-function examLaptopGuide(needsCode=false){return `<div class="notice" style="margin-bottom:12px"><b>노트북 접속 방법</b><br>① Chrome 또는 Edge 실행 → ② <a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a> 접속 → ③ 학생 선택 → ④ 학기·과목 선택 → ⑤ 학번+이름 로그인 → ⑥ 기말고사 메뉴 진입${needsCode?' → ⑦ 교수님이 알려주는 시험 접속코드 입력':''}</div>`}
+function examLaptopGuide(needsCode=false){return `<div class="notice" style="margin-bottom:12px"><b>노트북 접속 방법</b><br>① Chrome 또는 Edge 실행 → ② <a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a> 접속 → ③ 학생 선택 → ④ 교수자 QR 접속 정보 확인 → ⑤ 학번+이름 로그인 → ⑥ 기말고사 메뉴 진입${needsCode?' → ⑦ 교수님이 알려주는 시험 접속코드 입력':''}</div>`}
 function courseLabel(key){return courseNames[key]||course(key).defaultName||course(key).label}
 function courseDisplayText(key){const slot=course(key).label,actual=courseLabel(key);return actual&&actual!==slot?`${slot} · ${actual}`:slot}
 function setStudentCourse(key){if(!COURSES[key])return;selectedStudentCourse=key;$$('#studentCoursePick button').forEach(b=>b.classList.toggle('active',b.dataset.course===key));$('#loginMsg').textContent=`${courseDisplayText(key)} 학생 로그인`;}
@@ -50,17 +52,17 @@ async function loadPublicInfo(){
 }
 
 // ---------------- 학생 ----------------
-function studentStoreKey(key){return `class_student_v4_${key}`}
+function studentStoreKey(key){return studentQrContext?`class_student_qr_v1_${studentQrContext.semester_id}_${key}`:`class_student_v4_${key}`}
 function saveStudentSession(){if(student&&studentToken)localStorage.setItem(studentStoreKey(student.course),JSON.stringify({student,token:studentToken}))}
 function clearStudentSession(key=student?.course||selectedStudentCourse){localStorage.removeItem(studentStoreKey(key));if(key==='chinese1')localStorage.removeItem('c1_student_v2');student=null;studentToken=null}
 async function restoreStudent(key){
   if(!sb||!COURSES[key])return;
   let x=null;try{x=JSON.parse(localStorage.getItem(studentStoreKey(key))||'null')}catch{}
-  if(!x&&key==='chinese1'){try{x=JSON.parse(localStorage.getItem('c1_student_v2')||'null')}catch{}}
+  if(!x&&!studentQrContext&&key==='chinese1'){try{x=JSON.parse(localStorage.getItem('c1_student_v2')||'null')}catch{}}
   if(!x?.token)return;
   const rpc=isChinese(key)?`${cPrefix(key)}_student_me`:'lg_student_me';
   const {data,error}=await sb.rpc(rpc,{p_token:x.token});
-  if(!error&&data?.ok){student={id:data.id,login_no:data.login_no,student_no:data.student_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
+  if(!error&&data?.ok&&(!studentQrContext||(Number(data.semester_id)===Number(studentQrContext.semester_id)&&key===studentQrContext.course_key))){student={id:data.id,login_no:data.login_no,student_no:data.student_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
 }
 function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();}
 async function renderStudentGroup(){
@@ -85,11 +87,12 @@ function openStudentApp(){
   processPendingLinks();
 }
 $('#loginBtn').onclick=async()=>{
-  if(!sb)return;clearMsg($('#loginMsg'));
+  if(!sb||invalidStudentQr)return;clearMsg($('#loginMsg'));
   const studentNo=$('#sid').value.trim(),name=$('#sname').value.trim(),key=selectedStudentCourse;
   if(!studentNo||!name){msg($('#loginMsg'),'학번과 이름을 입력하세요.');return}
   let r;
-  if(isChinese(key))r=await sb.rpc(`${cPrefix(key)}_student_login_v2`,{p_student_no:studentNo,p_name:name});
+  if(studentQrContext)r=await sb.rpc('sm_student_login_from_qr',{p_code:studentQrCode,p_student_no:studentNo,p_name:name});
+  else if(isChinese(key))r=await sb.rpc(`${cPrefix(key)}_student_login_v2`,{p_student_no:studentNo,p_name:name});
   else r=await sb.rpc('lg_student_login_v2',{p_slot:course(key).slot,p_student_no:studentNo,p_name:name});
   if(r.error||!r.data?.ok){msg($('#loginMsg'),r.data?.message||r.error?.message||'학번과 이름이 일치하지 않습니다.');return}
   student={id:r.data.id,login_no:r.data.login_no,student_no:r.data.student_no,name:r.data.name,semester_id:r.data.semester_id,semester_name:r.data.semester_name,course:key,course_name:r.data.course_name||courseLabel(key)};studentToken=r.data.token;saveStudentSession();openStudentApp();
@@ -620,7 +623,29 @@ async function renderTeacherSemester(){
   };
 }
 
-function renderTeacherQR(){const pane=$('#tqr'),sem=selectedSemester(),url=baseUrl();url.searchParams.set('course',teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 학생접속 QR</h3><div class="muted">이 QR은 같은 웹주소를 사용합니다. 학생은 QR을 찍으면 ${esc(courseLabel(teacherCourse))}가 자동 선택됩니다.</div><div id="studentQR" class="qrbox" style="margin-top:12px"></div><div class="muted" style="word-break:break-all;margin-top:8px">${esc(url.href)}</div>${sem.is_active?'':'<div class="warn" style="margin-top:8px">현재 선택한 학기는 학생용 활성 학기가 아닙니다.</div>'}</div>`;new QRCode($('#studentQR'),{text:url.href,width:220,height:220})}
+// 학생용 입장 QR은 (학기,과목)마다 별도로 발급한다. 학생에게는 학기 선택권이 없다.
+async function makeSemesterStudentUrl(semesterId,courseKey){
+  const cacheKey=`${semesterId}:${courseKey}`;
+  if(!teacherEntryUrlPromises.has(cacheKey)){
+    teacherEntryUrlPromises.set(cacheKey,sb.rpc('sm_teacher_get_student_entry_qr',{p_semester_id:semesterId,p_course_key:courseKey}).then(({data,error})=>{
+      if(error||!data?.ok||!data.entry_code)throw new Error(data?.message||error?.message||'학생 접속 QR 생성 실패');
+      return data.entry_code;
+    }).catch(e=>{teacherEntryUrlPromises.delete(cacheKey);throw e}));
+  }
+  const code=await teacherEntryUrlPromises.get(cacheKey);
+  const url=baseUrl();url.searchParams.set('entry',code);return url;
+}
+async function renderTeacherQR(){
+  const pane=$('#tqr'),sem=selectedSemester(),key=teacherCourse;
+  pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(key))} 학생접속 QR · ${esc(sem.name)}</h3><div class="muted">학생이 이 QR을 찍으면 ${esc(sem.name)} · ${esc(courseLabel(key))}로 자동 접속합니다. 학생은 학기를 선택할 수 없습니다. 실제 학기의 활성 상태는 변경되지 않습니다.</div><div id="studentQR" class="qrbox" style="margin-top:12px">QR 생성 중…</div><div id="studentQRLink" class="muted" style="word-break:break-all;margin-top:8px"></div></div>`;
+  try{
+    const url=await makeSemesterStudentUrl(sem.id,key);
+    if(!$('#studentQR')||Number(selectedSemester()?.id)!==Number(sem.id)||teacherCourse!==key)return;
+    $('#studentQR').innerHTML='';
+    new QRCode($('#studentQR'),{text:url.href,width:220,height:220});
+    $('#studentQRLink').textContent=url.href;
+  }catch(e){if($('#studentQR'))$('#studentQR').innerHTML=`<span class="bad">${esc(e?.message||'QR 생성 실패')}</span>`;}
+}
 
 
 let _xlsxLoaderPromise=null;
@@ -1294,7 +1319,7 @@ async function renderTeacherChineseFinal(){
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
   if(!f){const d=['A','B','C','D','A','B','C','D','A','B','C','D','A','B','C','D','A','B','C','D'];await sb.from(`${p}_final_exam`).insert({semester_id:sem.id,answer_key:d,is_open:false,is_closed:false});f={semester_id:sem.id,answer_key:d,is_open:false,is_closed:false}}
   const done=new Set((subs||[]).map(x=>Number(x.student_id))),missing=(roster||[]).filter(st=>!done.has(Number(st.id))),submitted=done.size,total=(roster||[]).length;
-  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 기말고사</h3><div class="muted">20문항 × 1점 → 30점 환산</div></div><div class="toolbar"><b>${f.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button id="showFinalMissing">미제출자 보기</button>${f.is_closed?'':`<button id="closeFinal" class="danger">기말고사 답안 제출 마감</button>`}</div></div><div id="finalMissing" style="margin-top:8px"></div><div class="notice" style="margin-top:10px"><b>학생 노트북 접속 주소</b><br><a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a><br>Chrome/Edge → 위 주소 → 학생 → 학기·과목 → 학번+이름 로그인 → 기말고사</div><label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input id="finalOpen" type="checkbox" style="width:auto;min-height:auto" ${f.is_open?'checked':''} ${f.is_closed?'disabled':''}> 학생에게 공개</label><div class="ansgrid" style="margin-top:10px">${f.answer_key.map((a,i)=>`<label>${i+1}번<select data-fans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button id="saveFinal" class="primary" style="margin-top:10px">20문항 정답·공개 설정 저장</button><div id="finalMsg" class="muted" style="margin-top:8px"></div></div>`;
+  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 기말고사</h3><div class="muted">20문항 × 1점 → 30점 환산</div></div><div class="toolbar"><b>${f.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button id="showFinalMissing">미제출자 보기</button>${f.is_closed?'':`<button id="closeFinal" class="danger">기말고사 답안 제출 마감</button>`}</div></div><div id="finalMissing" style="margin-top:8px"></div><div class="notice" style="margin-top:10px"><b>학생 노트북 접속 주소</b><br><a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a><br>Chrome/Edge → 교수자 학생접속 QR 주소 → 학생 → 학번+이름 로그인 → 기말고사</div><label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input id="finalOpen" type="checkbox" style="width:auto;min-height:auto" ${f.is_open?'checked':''} ${f.is_closed?'disabled':''}> 학생에게 공개</label><div class="ansgrid" style="margin-top:10px">${f.answer_key.map((a,i)=>`<label>${i+1}번<select data-fans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button id="saveFinal" class="primary" style="margin-top:10px">20문항 정답·공개 설정 저장</button><div id="finalMsg" class="muted" style="margin-top:8px"></div></div>`;
   $('#showFinalMissing').onclick=()=>{$('#finalMissing').innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>'};
   if($('#closeFinal'))$('#closeFinal').onclick=async()=>{if(!confirm(`기말고사 답안 제출을 마감할까요?\n현재 제출 ${submitted}/${total}명입니다.\n마감 후에는 추가 제출할 수 없습니다.`))return;const {data,error}=await sb.rpc(`${p}_close_final`,{p_semester_id:sem.id});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');return}renderTeacherChineseFinal()};
   $('#saveFinal').onclick=async()=>{const answer_key=[...pane.querySelectorAll('[data-fans]')].map(x=>x.value),is_open=$('#finalOpen').checked;const {error}=await sb.from(`${p}_final_exam`).upsert({semester_id:sem.id,answer_key,is_open},{onConflict:'semester_id'});if(error)msg($('#finalMsg'),error.message);else msg($('#finalMsg'),'기말고사 설정을 저장했습니다.',true)}
@@ -1308,7 +1333,7 @@ async function renderTeacherLargeFinal(){
   ]);
   const questions=(ex?.questions?.length?ex.questions:[{id:'q1',prompt:'',max_score:30,criteria:''}]),subMap=new Map((subs||[]).map(x=>[x.student_id,x]));
   const submittedRows=(subs||[]).filter(x=>x.is_submitted),submittedIds=new Set(submittedRows.map(x=>Number(x.student_id))),missing=(roster||[]).filter(st=>!submittedIds.has(Number(st.id))),submitted=submittedIds.size,total=(roster||[]).length;
-  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 논술형 기말고사</h3><div class="muted">문제 수는 자유 · 전체 배점 합계는 30점</div></div><div class="toolbar"><b>${ex?.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button id="showEssayMissing">미제출자 보기</button>${ex?.is_closed?'':`<button id="closeEssayFinal" class="danger">기말고사 답안 제출 마감</button>`}</div></div><div id="essayMissing" style="margin-top:8px"></div><div class="notice" style="margin-top:10px"><b>학생 노트북 접속 주소</b><br><a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a><br>Chrome/Edge → 위 주소 → 학생 → 학기·과목 → 학번+이름 로그인 → 기말고사<br><b>접속코드를 설정한 경우 학생에게 해당 코드도 알려주세요.</b></div><label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input id="essayOpen" type="checkbox" style="width:auto;min-height:auto" ${ex?.is_open?'checked':''} ${ex?.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:block;max-width:360px;margin-top:10px">시험 접속코드(선택)<input id="essayAccessCode" value="${esc(ex?.access_code||'')}" placeholder="비워두면 접속코드 없음" ${ex?.is_closed?'disabled':''}></label><div id="questionEditors" style="margin-top:12px"></div><div class="row"><button id="addEssayQ" ${ex?.is_closed?'disabled':''}>문제 추가</button><button id="saveEssayExam" class="primary" ${ex?.is_closed?'disabled':''}>문제·기준·공개 설정 저장</button></div><div id="essayTeacherMsg" class="muted" style="margin-top:8px"></div></div><div class="card"><div class="row"><div><h3 class="section-title">제출·채점 현황</h3><div class="muted">AI 점수는 제안점수이며 교수자가 최종 점수를 수정·확정할 수 있습니다.</div></div></div><div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>제출</th><th>AI점수</th><th>교수자점수</th><th>반영점수</th><th>답안</th></tr></thead><tbody>${(roster||[]).map(s=>{const f=subMap.get(s.id);const applied=f?(f.teacher_score??f.ai_score??''):' ';return `<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td><td>${f?.is_submitted?'✅':'-'}</td><td>${f?.ai_score??'-'}</td><td>${f?.teacher_score??'-'}</td><td><b>${applied===''?'-':applied}</b></td><td>${f?.is_submitted?`<button data-view-essay="${s.id}" class="smallbtn">보기·채점</button>`:'-'}</td></tr>`}).join('')}</tbody></table></div></div><div id="essayDetail"></div>`;
+  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 논술형 기말고사</h3><div class="muted">문제 수는 자유 · 전체 배점 합계는 30점</div></div><div class="toolbar"><b>${ex?.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button id="showEssayMissing">미제출자 보기</button>${ex?.is_closed?'':`<button id="closeEssayFinal" class="danger">기말고사 답안 제출 마감</button>`}</div></div><div id="essayMissing" style="margin-top:8px"></div><div class="notice" style="margin-top:10px"><b>학생 노트북 접속 주소</b><br><a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a><br>Chrome/Edge → 교수자 학생접속 QR 주소 → 학생 → 학번+이름 로그인 → 기말고사<br><b>접속코드를 설정한 경우 학생에게 해당 코드도 알려주세요.</b></div><label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input id="essayOpen" type="checkbox" style="width:auto;min-height:auto" ${ex?.is_open?'checked':''} ${ex?.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:block;max-width:360px;margin-top:10px">시험 접속코드(선택)<input id="essayAccessCode" value="${esc(ex?.access_code||'')}" placeholder="비워두면 접속코드 없음" ${ex?.is_closed?'disabled':''}></label><div id="questionEditors" style="margin-top:12px"></div><div class="row"><button id="addEssayQ" ${ex?.is_closed?'disabled':''}>문제 추가</button><button id="saveEssayExam" class="primary" ${ex?.is_closed?'disabled':''}>문제·기준·공개 설정 저장</button></div><div id="essayTeacherMsg" class="muted" style="margin-top:8px"></div></div><div class="card"><div class="row"><div><h3 class="section-title">제출·채점 현황</h3><div class="muted">AI 점수는 제안점수이며 교수자가 최종 점수를 수정·확정할 수 있습니다.</div></div></div><div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>제출</th><th>AI점수</th><th>교수자점수</th><th>반영점수</th><th>답안</th></tr></thead><tbody>${(roster||[]).map(s=>{const f=subMap.get(s.id);const applied=f?(f.teacher_score??f.ai_score??''):' ';return `<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td><td>${f?.is_submitted?'✅':'-'}</td><td>${f?.ai_score??'-'}</td><td>${f?.teacher_score??'-'}</td><td><b>${applied===''?'-':applied}</b></td><td>${f?.is_submitted?`<button data-view-essay="${s.id}" class="smallbtn">보기·채점</button>`:'-'}</td></tr>`}).join('')}</tbody></table></div></div><div id="essayDetail"></div>`;
   $('#showEssayMissing').onclick=()=>{$('#essayMissing').innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>'};
   if($('#closeEssayFinal'))$('#closeEssayFinal').onclick=async()=>{if(!confirm(`기말고사 답안 제출을 마감할까요?\n현재 최종 제출 ${submitted}/${total}명입니다.\n마감 후에는 임시저장과 최종제출이 모두 차단됩니다.`))return;const {data,error}=await sb.rpc('lg_close_final',{p_semester_id:sem.id,p_slot:sl});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');return}renderTeacherLargeFinal()};
   let editorQuestions=questions.map((q,i)=>({id:q.id||`q${i+1}`,prompt:q.prompt||'',max_score:Number(q.max_score||0),criteria:q.criteria||''}));
@@ -1327,8 +1352,7 @@ async function showEssayDetail(studentId,roster,subMap,questions,semId,sl){const
 async function renderTeacherHomework(){if(isChinese(teacherCourse))return renderTeacherChineseHomework();return renderTeacherLargeHomework()}
 async function renderTeacherChineseHomework(){const pane=$('#thomework'),sem=selectedSemester(),p=cPrefix(teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 과제</h3><div class="muted">${teacherCourse==='chinese1'?'N주차 듣기평가 → N+1주차 과제 검사. 각 회차 만점은 자동 인정되고, 나머지는 이 주차 QR 한 번으로 일괄 인정됩니다. 계절학기도 수업 순서를 주차로 설정합니다.':'교수자 휴대폰에 QR을 띄우고, 과제물을 직접 확인한 학생이 자기 휴대폰으로 QR을 찍으면 해당 주차 과제가 확인됩니다.'}</div><label style="max-width:220px;display:block;margin-top:10px">주차<select id="thwWeek">${weekOpts()}</select></label><div id="thwBody" style="margin-top:10px"></div></div>`;const load=async()=>{const w=Number($('#thwWeek').value);const [{data:h},{data:roster},{data:recs}]=await Promise.all([sb.from(`${p}_homework`).select('*').eq('semester_id',sem.id).eq('week',w).maybeSingle(),sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id),sb.from(`${p}_homework_records`).select('student_id').eq('semester_id',sem.id).eq('week',w)]);const code=h?.code||'',confirmed=new Set((recs||[]).map(x=>x.student_id));$('#thwBody').innerHTML=`<div class="grid g2"><label>인증코드<input id="hwTeacherCode" value="${esc(code)}" placeholder="자동생성 또는 직접 입력"></label><div class="toolbar"><button id="genHwCode">코드 자동생성</button><label style="display:flex;align-items:center;gap:6px"><input id="hwOpen" type="checkbox" style="width:auto;min-height:auto" ${h?.is_open?'checked':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input id="hwCounted" type="checkbox" style="width:auto;min-height:auto" ${h?.counted!==false?'checked':''}> 성적 반영</label></div></div><div class="toolbar" style="margin-top:10px">${teacherCourse==='chinese1'?'<button id="startHwCheck" class="primary">이 주차 과제 검사 시작 · QR 표시</button>':''}<button id="saveHw" class="primary">과제 설정 저장</button></div><div id="hwTeacherMsg" class="muted" style="margin-top:8px"></div><div class="q"><b>확인 현황: ${confirmed.size}/${(roster||[]).length}명</b></div><div id="hwQR"></div>`;$('#genHwCode').onclick=()=>{$('#hwTeacherCode').value=`HW${String(w).padStart(2,'0')}-${Math.random().toString(36).slice(2,8).toUpperCase()}`};$('#saveHw').onclick=async()=>{const code=$('#hwTeacherCode').value.trim();if(!code){msg($('#hwTeacherMsg'),'인증코드를 입력하세요.');return}const row={semester_id:sem.id,week:w,code,is_open:$('#hwOpen').checked,counted:$('#hwCounted').checked};const {error}=await sb.from(`${p}_homework`).upsert(row,{onConflict:'semester_id,week'});if(error)msg($('#hwTeacherMsg'),error.message);else{msg($('#hwTeacherMsg'),'과제 설정을 저장했습니다.',true);drawChineseHomeworkQR(w,code,sem.is_active)}};
     if(teacherCourse==='chinese1')$('#startHwCheck').onclick=async()=>{
-      if(!sem.is_active){msg($('#hwTeacherMsg'),'비활성 학기에서는 학생에게 QR을 공개할 수 없습니다.');return}
-      const btn=$('#startHwCheck');btn.disabled=true;
+            const btn=$('#startHwCheck');btn.disabled=true;
       const randomBytes=new Uint8Array(5);if(window.crypto?.getRandomValues)window.crypto.getRandomValues(randomBytes);else randomBytes.forEach((_,i)=>randomBytes[i]=Math.floor(Math.random()*256));
       const generated=`HW${String(w).padStart(2,'0')}-`+[...randomBytes].map(x=>x.toString(16).padStart(2,'0')).join('').toUpperCase();
       const newCode=$('#hwTeacherCode').value.trim()||generated;
@@ -1356,10 +1380,20 @@ async function renderTeacherChinese1HomeworkSummary(semesterId,week){
     (rows.length?`<div class="tablewrap"><table><thead><tr><th>듣기평가</th><th>만점 자동</th><th>QR 인정</th><th>미인정</th></tr></thead><tbody>${rows.map(r=>`<tr><td>제${r.quiz_round}차</td><td>${r.auto_count}명</td><td>${r.qr_count}명</td><td>${r.pending_count}명</td></tr>`).join('')}</tbody></table></div>`:'<div class="muted">이 주차에 연결된 듣기평가가 없습니다.</div>');
   $('#refreshHwQuizSummary').onclick=()=>renderTeacherChinese1HomeworkSummary(semesterId,week);
 }
-function drawChineseHomeworkQR(week,code,isActive){const box=$('#hwQR');if(!box)return;const url=baseUrl();url.searchParams.set('course',teacherCourse);url.searchParams.set('homework_week',week);url.searchParams.set('code',code);box.innerHTML=`<div class="muted">${isActive?'교수자 휴대폰에 띄울 과제 확인 QR':'이 학기는 비활성 학기이므로 QR은 보관용입니다.'}</div><div id="hwQRImg" class="qrbox" style="margin-top:8px"></div><div class="muted" style="word-break:break-all;margin-top:6px">${esc(url.href)}</div>`;new QRCode($('#hwQRImg'),{text:url.href,width:220,height:220})}
+async function drawChineseHomeworkQR(week,code,isActive){
+  const box=$('#hwQR'),sem=selectedSemester(),key=teacherCourse;if(!box||!sem)return;
+  box.textContent='선택한 학기의 과제 QR 생성 중…';
+  try{
+    const url=await makeSemesterStudentUrl(sem.id,key);
+    if(!$('#hwQR')||$('#hwQR')!==box||Number(selectedSemester()?.id)!==Number(sem.id)||teacherCourse!==key||Number($('#thwWeek')?.value)!==Number(week))return;
+    url.searchParams.set('homework_week',week);url.searchParams.set('code',code);
+    box.innerHTML=`<div class="muted">${esc(sem.name)} · 교수자 과제 검사 QR · 학생은 이 학기로 자동 접속</div><div id="hwQRImg" class="qrbox" style="margin-top:8px"></div><div class="muted" style="word-break:break-all;margin-top:6px">${esc(url.href)}</div>`;
+    new QRCode($('#hwQRImg'),{text:url.href,width:220,height:220});
+  }catch(e){if($('#hwQR')===box)box.innerHTML=`<span class="bad">과제 QR 생성 실패: ${esc(e?.message||String(e))}</span>`;}
+}
 async function renderTeacherLargeHomework(){
   clearInterval(homeworkQrTimer);homeworkQrTimer=null;const pane=$('#thomework'),sem=selectedSemester(),sl=course(teacherCourse).slot;pane.innerHTML=`<div class="card bigqr"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 기말 과제 제출 QR</h3><div class="muted">기말고사 당일 한 번 사용 · 학생별 1회만 인정 · 여러 학생 동시 인증 가능</div></div><div><button id="startDynQR" class="primary">과제 QR 시작</button> <button id="stopDynQR" class="danger">QR 종료</button></div></div><div class="notice" style="margin-top:10px">학생은 퇴실하면서 실물 과제를 교수님께 제출한 직후 교수님 휴대폰의 QR을 찍습니다. QR은 약 3초마다 바뀌고 각 인증값은 5초만 유효합니다. 학생 휴대폰은 미리 해당 과목에 로그인해 두는 것이 좋습니다.</div><div id="dynStatus" class="q"><b>상태 확인 중…</b></div><div id="dynQR" class="qrbox"></div><div id="dynMsg" class="muted" style="margin-top:8px"></div></div>`;
-  const update=async()=>{const {data,error}=await sb.rpc('lg_get_homework_qr',{p_semester_id:sem.id,p_slot:sl});if(error){msg($('#dynMsg'),error.message);return}$('#dynStatus').innerHTML=`<b>${data?.active?'QR 작동 중':'QR 꺼짐'} · 제출 확인 ${data?.confirmed||0}/${data?.total||0}명</b>`;const box=$('#dynQR');box.innerHTML='';if(data?.active&&data.token){const url=baseUrl();url.searchParams.set('course',teacherCourse);url.searchParams.set('hwtoken',data.token);new QRCode(box,{text:url.href,width:320,height:320});$('#dynMsg').textContent=`QR 자동 갱신 · 현재 인증값 ${data.valid_seconds}초 유효`;$('#dynMsg').className='ok'}else box.innerHTML='<div class="muted">[과제 QR 시작]을 누르면 이곳에 큰 QR이 표시됩니다.</div>'};
+  const update=async()=>{const {data,error}=await sb.rpc('lg_get_homework_qr',{p_semester_id:sem.id,p_slot:sl});if(error){msg($('#dynMsg'),error.message);return}$('#dynStatus').innerHTML=`<b>${data?.active?'QR 작동 중':'QR 꺼짐'} · 제출 확인 ${data?.confirmed||0}/${data?.total||0}명</b>`;const box=$('#dynQR');box.innerHTML='';if(data?.active&&data.token){let url;try{url=await makeSemesterStudentUrl(sem.id,teacherCourse)}catch(e){msg($('#dynMsg'),e?.message||'학생 QR 생성 실패');return}url.searchParams.set('hwtoken',data.token);new QRCode(box,{text:url.href,width:320,height:320});$('#dynMsg').textContent=`QR 자동 갱신 · 현재 인증값 ${data.valid_seconds}초 유효`;$('#dynMsg').className='ok'}else box.innerHTML='<div class="muted">[과제 QR 시작]을 누르면 이곳에 큰 QR이 표시됩니다.</div>'};
   $('#startDynQR').onclick=async()=>{const {error}=await sb.rpc('lg_start_homework_session',{p_semester_id:sem.id,p_slot:sl});if(error){msg($('#dynMsg'),error.message);return}await update();clearInterval(homeworkQrTimer);homeworkQrTimer=setInterval(update,3000)};
   $('#stopDynQR').onclick=async()=>{if(!confirm('과제 QR을 종료할까요? 종료 즉시 기존 QR은 사용할 수 없습니다.'))return;const {error}=await sb.rpc('lg_stop_homework_session',{p_semester_id:sem.id,p_slot:sl});clearInterval(homeworkQrTimer);homeworkQrTimer=null;if(error)msg($('#dynMsg'),error.message);else update()};
   await update();const {data}=await sb.rpc('lg_get_homework_qr',{p_semester_id:sem.id,p_slot:sl});if(data?.active)homeworkQrTimer=setInterval(update,3000);
@@ -1432,9 +1466,25 @@ function saveCsv(lines,name){const blob=new Blob(['\ufeff'+lines.join('\n')],{ty
 
 // ---------------- 시작 ----------------
 (async()=>{
-  const u=new URL(location.href),qcourse=u.searchParams.get('course');if(COURSES[qcourse])setStudentCourse(qcourse);else setStudentCourse('chinese1');
+  const u=new URL(location.href),qcourse=u.searchParams.get('course'),entryCode=u.searchParams.get('entry');
+  if(COURSES[qcourse])setStudentCourse(qcourse);else setStudentCourse('chinese1');
   await loadPublicInfo();
-  if(COURSES[qcourse])setStudentCourse(qcourse);
+  if(entryCode){
+    const {data,error}=await sb.rpc('sm_get_student_entry_context',{p_code:entryCode});
+    if(error||!data?.ok||!COURSES[data.course_key]){
+      invalidStudentQr=true;
+      $('#loginMsg').textContent=data?.message||error?.message||'QR이 유효하지 않습니다. 교수자에게 다시 요청하세요.';
+      $('#loginBtn').disabled=true;
+      $('#publicSemesterLabel').textContent='학생접속 QR 확인 실패';
+      return;
+    }
+    studentQrContext=data;studentQrCode=entryCode;
+    courseNames[data.course_key]=data.course_name||course(data.course_key).defaultName;
+    setStudentCourse(data.course_key);
+    const picker=$('#studentCoursePick');if(picker)picker.classList.add('hidden');
+    $('#publicSemesterLabel').textContent=`${data.semester_name} · ${data.course_name} · QR 학기 자동 지정`;
+    $('#loginMsg').textContent=`QR 연결: ${data.semester_name} · ${data.course_name} · 학번과 이름을 입력하세요.`;
+  }else if(COURSES[qcourse])setStudentCourse(qcourse);
   await restoreStudent(selectedStudentCourse);
-  if(!student&&(u.searchParams.get('hwtoken')||u.searchParams.get('homework_week')))$('#loginMsg').textContent='QR 인증을 위해 먼저 학번과 이름으로 로그인하세요. 동적 QR은 매우 짧게 유효하므로 대형강의 학생은 미리 휴대폰 로그인을 해두는 것이 좋습니다.';
+  if(!student&&!entryCode&&(u.searchParams.get('hwtoken')||u.searchParams.get('homework_week')))$('#loginMsg').textContent='과제 QR 인증을 위해 먼저 학번과 이름으로 로그인하세요.';
 })();
