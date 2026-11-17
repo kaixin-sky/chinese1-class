@@ -98,29 +98,33 @@ $$('#stabs button').forEach(b=>b.onclick=()=>switchStudentTab(b.dataset.tab));
 
 async function renderStudentAttendance(){
   if(!studentToken)return;
-  $('#attendancePane').innerHTML=`<div class="card"><h3 class="section-title">출석 단어 입력</h3><div id="week1AutoStudent" class="notice hidden" style="margin-bottom:10px"><b>1주차 자동 출석</b><br>명단이 2주차에 확정되므로 1주차는 모든 과목에서 1·2·3교시가 자동으로 출석 처리됩니다.</div><div class="grid g2"><label>주차<select id="aw">${weekOpts()}</select></label><label>교시<select id="ap"><option value="1">1교시</option><option value="2">2교시</option><option value="3">3교시</option></select></label></div><div id="attGateHint" class="muted" style="margin-top:10px"></div><label style="display:block;margin-top:8px">제시 단어<input id="attword" placeholder="교수자가 출석을 연 뒤 단어 입력" autocomplete="off"></label><button id="attsub" class="primary" style="margin-top:10px">출석 확인</button><div id="attmsg" class="muted" style="margin-top:8px"></div><div class="muted" style="margin-top:6px">※ 서버 저장이 성공한 경우에만 <b>✓ 시작 확인</b> 또는 <b>✓ 종료 확인</b>으로 표시됩니다. 실패하면 입력한 단어는 그대로 남습니다.</div><div id="attweekstatus" style="margin-top:12px"></div></div>`;
+  $('#attendancePane').innerHTML=`<div class="card"><h3 class="section-title">출석 단어 입력</h3><div id="week1AutoStudent" class="notice hidden" style="margin-bottom:10px"><b>1주차 자동 출석</b><br>명단이 2주차에 확정되므로 1주차는 모든 과목에서 1·2·3교시가 자동으로 출석 처리됩니다.</div><div class="grid g2"><label>주차<select id="aw">${weekOpts()}</select></label><label>교시<select id="ap"><option value="1">1교시</option><option value="2">2교시</option><option value="3">3교시</option></select></label></div><div id="attGateHint" class="muted" style="margin-top:10px"></div><div id="attSelectedState" role="status" aria-live="polite" style="font-weight:700;margin-top:8px">상태 확인 중…</div><label style="display:block;margin-top:8px">제시 단어<input id="attword" placeholder="교수자가 출석을 연 뒤 단어 입력" autocomplete="off"></label><button id="attsub" class="primary" style="margin-top:10px">출석 확인</button><div id="attmsg" class="muted" style="margin-top:8px"></div><div class="muted" style="margin-top:6px">※ 서버 저장이 성공한 경우에만 <b>✓ 시작 확인</b> 또는 <b>✓ 종료 확인</b>으로 표시됩니다. 실패하면 입력한 단어는 그대로 남습니다.</div><div id="attweekstatus" style="margin-top:12px"></div></div>`;
 
   let weekData=[];
   let lastSuccess=null;
 
-  const badge=(label,state,ok)=>{
-    let bg='#e5e7eb',fg='#374151',text=`${label} 대기`;
-    if(ok){bg='#16a34a';fg='white';text=`✓ ${label} 확인`}
-    else if(state==='open'){bg='#16a34a';fg='white';text=`${label} 입력 가능`}
-    else if(state==='closed'){bg='#dc2626';fg='white';text=`${label} 마감`}
-    return `<button type="button" disabled style="opacity:1;cursor:default;background:${bg};color:${fg};border-color:${bg};min-height:38px;padding:7px 10px">${text}</button>`;
+  const badge=(label,state,ok,auto=false)=>{
+    // 주차 확정 후에도 이미 확인된 출석은 반드시 '출석 완료'로 표시한다.
+    const status=auto?'자동 출석':ok?'출석 완료':state==='open'?'입력 가능':state==='closed'?'마감':'대기';
+    const bg=(auto||ok)?'#16a34a':state==='open'?'#2563eb':state==='closed'?'#dc2626':'#6b7280';
+    const action=auto?'자동 출석':ok?'✓ 확인 완료':state==='open'?'출석 확인':state==='closed'?'입력 마감':'출석 대기';
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:5px;min-width:106px">
+      <b style="color:${bg};font-size:14px">${label} · ${status}</b>
+      <button type="button" disabled aria-label="${label} ${status}" style="opacity:1;cursor:default;background:${bg};color:white;border-color:${bg};min-height:38px;padding:7px 10px;width:100%">${action}</button>
+    </div>`;
   };
 
   const drawWeekStatus=()=>{
-    const rows=weekData||[];
+    const rows=(weekData?.length?weekData:(Number($('#aw').value)===1?[1,2,3].map(period=>({period,start_ok:true,end_ok:true,status:'자동 출석'})):[]));
+    const auto=Number($('#aw').value)===1;
     $('#attweekstatus').innerHTML=`<div class="grid g3">${rows.map(x=>`
       <div class="q">
         <b>${x.period}교시</b>
         <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
-          ${badge('시작',x.start_state,x.start_ok)}
-          ${badge('종료',x.end_state,x.end_ok)}
+          ${badge('시작',x.start_state,x.start_ok,auto)}
+          ${badge('종료',x.end_state,x.end_ok,auto)}
         </div>
-        <div style="margin-top:8px">현재 상태: <b>${esc(x.status)}</b></div>
+        <div style="margin-top:8px">현재 상태: <b>${auto?'1주차 자동 출석':esc(x.status)}</b></div>
         ${x.start_ok?`<div class="muted">시작 확인: ${fmtDT(x.start_checked_at)}</div>`:''}
         ${x.end_ok?`<div class="muted">종료 확인: ${fmtDT(x.end_checked_at)}</div>`:''}
       </div>`).join('')}</div>`;
@@ -139,42 +143,49 @@ async function renderStudentAttendance(){
 
   const updateSelectedHint=()=>{
     const w=Number($('#aw').value),p=Number($('#ap').value),x=(weekData||[]).find(v=>Number(v.period)===p);
-    const hint=$('#attGateHint'),word=$('#attword'),btn=$('#attsub');
-    if(w===1)return;
-    word.disabled=false;btn.disabled=false;
-
-    if(x?.week_finalized){
-      hint.innerHTML='<b style="color:#dc2626">이 주차는 이미 출석 확정되었습니다.</b>';
-      word.disabled=true;btn.disabled=true;
-      btn.textContent='출석 확정됨';
-      btn.style.background='';btn.style.borderColor='';btn.style.color='';
+    const hint=$('#attGateHint'),word=$('#attword'),btn=$('#attsub'),state=$('#attSelectedState');
+    const setButton=(label,bg,disabled)=>{
+      btn.textContent=label;btn.disabled=disabled;
+      btn.style.background=bg;btn.style.borderColor=bg;btn.style.color='white';
+    };
+    if(w===1){
+      state.innerHTML='<span style="color:#15803d">1주차 · 자동 출석</span>';
+      hint.textContent='1주차는 학생 명단 미확정으로 1·2·3교시를 자동 출석 처리합니다.';
+      word.disabled=true;word.placeholder='1주차 단어 입력 불필요';
+      setButton('자동 출석', '#16a34a',true);
       return;
     }
-
+    const startDone=!!x?.start_ok,endDone=!!x?.end_ok;
     const open=[];
-    if(x?.start_state==='open'&&!x?.start_ok)open.push('시작');
-    if(x?.end_state==='open'&&!x?.end_ok)open.push('종료');
-
-    if(open.length){
-      hint.innerHTML=`<b style="color:#15803d">${open.join('·')} 출석 입력 가능</b> · 교수자가 마감하면 더 이상 인정되지 않습니다.`;
-      word.placeholder=`현재 ${open.join('·')} 출석 단어 입력`;
-    }else if(x?.start_ok&&x?.end_ok){
-      hint.innerHTML='<b style="color:#15803d">✓ 이 교시는 시작·종료 출석이 모두 확인되었습니다.</b>';
+    if(x?.start_state==='open'&&!startDone)open.push('시작');
+    if(x?.end_state==='open'&&!endDone)open.push('종료');
+    // 주차 확정은 새로운 입력만 막으며 이미 완료한 기록은 유지한다.
+    const isFinalized=!!x?.week_finalized;
+    const allDone=startDone&&endDone;
+    const hasOpen=!isFinalized&&open.length>0;
+    const hasClosed=isFinalized || x?.start_state==='closed'||x?.end_state==='closed';
+    const status=allDone?'출석 완료':hasOpen?'입력 가능':hasClosed?'마감':'대기';
+    const color=status==='출석 완료'?'#16a34a':status==='입력 가능'?'#2563eb':status==='마감'?'#dc2626':'#6b7280';
+    state.innerHTML=`<span style="color:${color}">${p}교시 · ${status}</span>`;
+    word.disabled=!hasOpen;
+    if(allDone){
+      hint.innerHTML='<b style="color:#15803d">✓ 시작·종료 출석이 모두 완료되었습니다.</b>';
       word.placeholder='출석 확인 완료';
-    }else if(x?.end_state==='closed'){
-      hint.innerHTML='<b style="color:#dc2626">이 교시는 출석 입력이 마감되었습니다.</b>';
+      setButton('✓ 출석 완료','#16a34a',true);
+    }else if(hasOpen){
+      hint.innerHTML=`<b style="color:#2563eb">${open.join('·')} 출석 입력 가능</b> · 단어를 입력한 다음 반드시 출석 확인 버튼을 누르세요.`;
+      word.placeholder=`현재 ${open.join('·')} 출석 단어 입력`;
+      if(lastSuccess&&lastSuccess.week===w&&lastSuccess.period===p){
+        setButton(`✓ ${lastSuccess.kind==='start'?'시작':'종료'} 확인 완료`,'#16a34a',true);
+      }else setButton('출석 확인','#2563eb',false);
+    }else if(hasClosed){
+      hint.innerHTML='<b style="color:#dc2626">출석 입력이 마감되었습니다. 이미 완료된 확인 기록은 유지됩니다.</b>';
       word.placeholder='출석 입력 마감';
+      setButton('입력 마감','#dc2626',true);
     }else{
-      hint.textContent='교수자가 시작 또는 종료 출석을 연 뒤 단어를 입력하세요.';
+      hint.textContent='교수자가 시작 또는 종료 출석을 열면 입력할 수 있습니다.';
       word.placeholder='교수자가 출석을 연 뒤 단어 입력';
-    }
-
-    if(lastSuccess&&lastSuccess.week===w&&lastSuccess.period===p){
-      btn.textContent=`✓ ${lastSuccess.kind==='start'?'시작':'종료'} 확인`;
-      btn.style.background='#16a34a';btn.style.borderColor='#16a34a';btn.style.color='white';
-    }else{
-      btn.textContent='출석 확인';
-      btn.style.background='';btn.style.borderColor='';btn.style.color='';
+      setButton('출석 대기','#6b7280',true);
     }
   };
 
