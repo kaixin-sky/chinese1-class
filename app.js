@@ -1326,9 +1326,6 @@ async function renderTeacherChineseGrades(){
     sb.from(`${p}_students`).select('id,student_no').eq('semester_id',sem.id)
   ]);
   if(error){pane.innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
-  const {data:releaseStatus,error:releaseError}=await sb.from('lg_final_exam').select('results_published').eq('semester_id',sem.id).eq('slot',sl).maybeSingle();
-  if(releaseError){pane.innerHTML=`<div class="card bad">성적 공개 상태를 확인하지 못했습니다: ${esc(releaseError.message)}</div>`;return}
-  const published=releaseStatus?.results_published===true;
   const noMap=new Map((roster||[]).map(x=>[Number(x.id),x.student_no||'']));
   const rows=(data||[]).map(r=>({...r,student_no:noMap.get(Number(r.student_id))||''}));
   const avg=k=>rows.length?rows.reduce((s,r)=>s+Number(r[k]||0),0)/rows.length:0;
