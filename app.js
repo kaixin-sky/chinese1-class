@@ -252,7 +252,7 @@ async function renderChineseQuiz(){
   if(error){$('#quizPane').innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
   $('#quizPane').innerHTML=`<div class="card"><h3 class="section-title">듣기평가</h3>${(data||[]).length?(data||[]).map(q=>{
     const time=q.submitted_at?fmtDT(q.submitted_at):'';
-    const state=q.submitted?(q.closed?`<span class="ok">제출완료 · ${q.score}/${q.total}</span><button data-qresult="${q.id}">정답·오답 보기</button>`:`<span class="ok">제출완료${time?` · ${time}`:''}</span><span class="badge">교수자 마감 후 결과 공개</span>`):`<button data-q="${q.id}" data-total="${q.total}" class="primary">응시</button>`;
+    const state=q.submitted?(q.manual_grade?`<span class="ok">교수자 수동 인정 · ${q.score}/${q.total}점</span><button data-qresult="${q.id}">인정 점수 보기</button>`:(q.closed?`<span class="ok">제출완료 · ${q.score}/${q.total}</span><button data-qresult="${q.id}">정답·오답 보기</button>`:`<span class="ok">제출완료${time?` · ${time}`:''}</span><span class="badge">교수자 마감 후 결과 공개</span>`)):`<button data-q="${q.id}" data-total="${q.total}" class="primary">응시</button>`;
     return `<div class="q"><div class="row"><b>제${q.round}차 · ${q.total}문항</b><div class="toolbar">${state}</div></div><div id="qarea${q.id}"></div></div>`
   }).join(''):'<div class="muted">현재 공개된 시험이 없습니다.</div>'}</div>`;
   $('#quizPane').querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>showChineseExam(Number(b.dataset.q),Number(b.dataset.total),false));
@@ -260,22 +260,35 @@ async function renderChineseQuiz(){
 }
 function showChineseExam(qid,n,isFinal){
   const p=cPrefix(student.course),area=isFinal?$('#finalPane'):$('#qarea'+qid),prefix=isFinal?'f-':`q${qid}-`;
-  area.innerHTML=(isFinal?`<div class="card"><h3>기말고사 20문항</h3>${examLaptopGuide(false)}`:'')+questionUI(n,prefix)+`<button id="submitCurrent" class="primary">답안지 제출</button><div id="exammsg" style="margin-top:10px"></div>`+(isFinal?'</div>':'');
-  $('#submitCurrent').onclick=async()=>{
-    const ans=collectAnswers(n,prefix);if(!ans){msg($('#exammsg'),'모든 문항에 답하세요.');return}
+  // Each exam has its own submit button/message. Never redraw the other open exams after saving one.
+  area.innerHTML=(isFinal?`<div class="card"><h3>기말고사 20문항</h3>${examLaptopGuide(false)}`:'')+questionUI(n,prefix)+`<button data-submit-exam class="primary">답안지 제출</button><div data-exam-message style="margin-top:10px"></div>`+(isFinal?'</div>':'');
+  const btn=area.querySelector('[data-submit-exam]'), examMessage=area.querySelector('[data-exam-message]');
+  btn.onclick=async()=>{
+    const ans=collectAnswers(n,prefix);if(!ans){msg(examMessage,'모든 문항에 답하세요.');return}
     if(!confirm('답안을 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;
-    const btn=$('#submitCurrent');btn.disabled=true;btn.textContent='제출 중…';
-    const r=isFinal?await sb.rpc(`${p}_submit_final`,{p_token:studentToken,p_answers:ans}):await sb.rpc(`${p}_submit_quiz`,{p_token:studentToken,p_quiz_id:qid,p_answers:ans});
-    if(r.error||!r.data?.ok){btn.disabled=false;btn.textContent='답안지 제출';msg($('#exammsg'),r.data?.message||r.error?.message||'제출되지 않았습니다. 다시 눌러주세요.');return}
+    btn.disabled=true;btn.textContent='제출 중…';
+    let r;
+    try { r=isFinal?await sb.rpc(`${p}_submit_final`,{p_token:studentToken,p_answers:ans}):await sb.rpc(`${p}_submit_quiz`,{p_token:studentToken,p_quiz_id:qid,p_answers:ans}); }
+    catch(e){btn.disabled=false;btn.textContent='답안지 제출';msg(examMessage,'네트워크 오류입니다. 제출 여부를 확인한 뒤 다시 시도하세요.');return}
+    if(r.error||!r.data?.ok){btn.disabled=false;btn.textContent='답안지 제출';msg(examMessage,r.data?.message||r.error?.message||'제출되지 않았습니다. 다시 눌러주세요.');return}
     const t=r.data.submitted_at?fmtDT(r.data.submitted_at):fmtDT(new Date().toISOString());
     area.innerHTML=`<div class="card"><div class="ok"><b>답안지 제출 완료</b></div><div class="muted" style="margin-top:8px">서버 저장 시각: ${esc(t)}</div><div class="notice" style="margin-top:10px">교수님이 답안 제출을 마감한 뒤 점수와 정답·오답을 확인할 수 있습니다.</div></div>`;
-    if(!isFinal)setTimeout(renderChineseQuiz,300);renderStudentScores();
+    if(!isFinal){
+      const openButton=$(`[data-q="${qid}"]`);
+      if(openButton)openButton.outerHTML=`<span class="ok">제출완료 · ${esc(t)}</span>`;
+      if(student?.course==='chinese1' && $('#hwweek'))renderMyChinese1QuizHomework(Number($('#hwweek').value));
+    }
+    renderStudentScores();
   };
 }
 async function showChineseQuizResult(qid){
   const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_get_quiz_result`,{p_token:studentToken,p_quiz_id:qid});
   if(error||!data?.ok)return;
   if(!data.closed){$('#qarea'+qid).innerHTML=`<div class="card"><div class="ok">답안지 제출 완료</div><div class="muted">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div><div class="notice">교수자 마감 후 결과가 공개됩니다.</div></div>`;return}
+  if(data.manual_grade){
+    $('#qarea'+qid).innerHTML=`<div class="card"><div class="score">${data.score}/${data.total}점</div><div class="notice">교수자가 답안 미저장 상황을 확인하고 수동으로 인정한 점수입니다. 실제 제11차 답안·문항별 정오 기록은 저장되지 않았습니다.</div></div>`;
+    return;
+  }
   $('#qarea'+qid).innerHTML=`<div class="card">${mcResult(data,data.answers)}</div>`
 }
 
@@ -314,16 +327,37 @@ function collectEssayAnswers(){const o={};$('#finalPane').querySelectorAll('[dat
 async function saveLargeDraft(auto=false){const answers=collectEssayAnswers();const {data,error}=await sb.rpc('lg_save_final_draft',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers});const el=$('#draftStatus')||$('#essayMsg');if(error||!data?.ok){if(data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}if(!auto)msg(el,data?.message||error?.message||'임시저장 실패');return}if(el){el.textContent=`${auto?'자동':'임시'}저장 완료 ${new Date().toLocaleTimeString()}`;el.className='ok'}}
 async function submitLargeEssay(){if(!confirm('최종 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;const answers=collectEssayAnswers();const btn=$('#submitEssay');if(btn){btn.disabled=true;btn.textContent='제출 중…'}const {data,error}=await sb.rpc('lg_submit_final',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers});if(error||!data?.ok){if(btn){btn.disabled=false;btn.textContent='최종 제출'}if(data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}msg($('#essayMsg'),data?.message||error?.message||'제출 실패');return}clearInterval(draftTimer);draftTimer=null;$('#finalPane').innerHTML=`<div class="card"><div class="ok"><b>기말고사 답안 최종 제출 완료</b></div><div class="muted" style="margin-top:8px">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div></div>`;renderStudentScores()}
 
+async function renderMyChinese1QuizHomework(week){
+  if(student?.course!=='chinese1'||!studentToken)return;
+  const box=$('#myQuizHomework');if(!box)return;
+  box.innerHTML='<div class="muted">회차별 과제 인정 상태 확인 중…</div>';
+  const {data,error}=await sb.rpc('c1_get_my_quiz_homework',{p_token:studentToken,p_homework_week:Number(week)});
+  if(!$('#myQuizHomework')||Number($('#hwweek')?.value)!==Number(week))return;
+  if(error){box.innerHTML=`<div class="bad">과제 인정 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;return}
+  const rows=data||[];
+  if(!rows.length){box.innerHTML='<div class="muted">이 주차에 연결된 회차별 듣기평가 과제가 없습니다. 이전 학기 초반 과제는 종전 주차별 기록을 따릅니다.</div>';return}
+  box.innerHTML=`<div class="q"><b>${week}주차 과제 · 회차별 인정 현황</b><div class="muted">${week-1}주차에 실시한 시험의 과제를 표시합니다. 만점은 자동 인정되며 나머지는 ${week}주차 QR 한 번으로 인정할 수 있습니다.</div></div>`+rows.map(r=>{
+    const src=r.recognition_source;
+    const state=src==='perfect'?'<span class="ok">만점 · 자동 제출 완료</span>':src==='qr'?'<span class="ok">QR 인증 · 제출 완료</span>':r.score==null?'<span class="muted">시험 결과 미확인 · 과제 미인정</span>':'<span class="bad">과제 검사 후 QR 인증 필요</span>';
+    const score=r.score==null?'점수 미확인':`${fmt(r.score,Number(r.score)%1?2:0)}/${r.total}점`;
+    return `<div class="q"><div class="row"><b>제${r.quiz_round}차 · ${esc(score)}</b><div>${state}</div></div></div>`;
+  }).join('');
+}
 async function renderStudentHomework(){
   if(!studentToken)return;
   if(isChinese(student.course)){
-    $('#homeworkPane').innerHTML=`<div class="card"><h3 class="section-title">과제 확인</h3><div class="grid g2"><label>주차<select id="hwweek">${weekOpts()}</select></label><label>QR 인증코드<input id="hwcode"></label></div><button id="hwsub" class="primary" style="margin-top:10px">과제 확인</button><div id="hwmsg" class="muted" style="margin-top:8px"></div></div>`;
+    const extra=student.course==='chinese1'?'<div class="notice" style="margin-top:10px">듣기평가 N주차 → N+1주차 과제 검사. 회차별 만점은 자동 인정, 나머지는 교수자 검사 후 해당 주차 QR 한 번으로 인정됩니다.</div><div id="myQuizHomework" style="margin-top:10px"></div>':'';
+    $('#homeworkPane').innerHTML=`<div class="card"><h3 class="section-title">과제 확인</h3><div class="grid g2"><label>주차<select id="hwweek">${weekOpts()}</select></label><label>QR 인증코드<input id="hwcode"></label></div><button id="hwsub" class="primary" style="margin-top:10px">과제 확인</button><div id="hwmsg" class="muted" style="margin-top:8px"></div>${extra}</div>`;
     $('#hwsub').onclick=()=>submitChineseHomework(Number($('#hwweek').value),$('#hwcode').value.trim(),$('#hwmsg'));
+    if(student.course==='chinese1'){
+      $('#hwweek').onchange=()=>renderMyChinese1QuizHomework(Number($('#hwweek').value));
+      renderMyChinese1QuizHomework(Number($('#hwweek').value));
+    }
   }else{
     const {data}=await sb.rpc('lg_get_student_summary',{p_token:studentToken});$('#homeworkPane').innerHTML=`<div class="card"><h3 class="section-title">기말 과제 제출 확인</h3>${data?.homework_done?'<div class="ok">과제 제출 확인 완료 · 20/20</div>':'<div class="muted">기말고사 당일 실물 과제를 교수님께 제출한 뒤, 교수님 휴대폰의 동적 QR을 바로 촬영하세요.</div>'}<div id="hwmsg" class="muted" style="margin-top:8px"></div></div>`;
   }
 }
-async function submitChineseHomework(week,code,el){const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_check_homework`,{p_token:studentToken,p_week:week,p_code:code});if(error||!data?.ok)msg(el,data?.message||error?.message||'실패');else{msg(el,'과제가 확인되었습니다.',true);renderStudentScores()}}
+async function submitChineseHomework(week,code,el){const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_check_homework`,{p_token:studentToken,p_week:week,p_code:code});if(error||!data?.ok)msg(el,data?.message||error?.message||'실패');else{msg(el,student.course==='chinese1'?'과제가 확인되었습니다. 해당 주차의 QR 대상 회차를 한꺼번에 인정했습니다.':'과제가 확인되었습니다.',true);renderStudentScores();if(student.course==='chinese1')renderMyChinese1QuizHomework(week)}}
 async function renderStudentPledge(){
   const pane=$('#pledgePane');if(!pane||!studentToken)return;
   if(isChinese(student.course)){pane.innerHTML='';return}
@@ -1115,19 +1149,38 @@ async function renderTeacherQuiz(){
       qs=reread.data||[];
     }
   }
+  // A quiz may be prepared before the week in which it is actually administered.
+  // For small1 the teacher can set an explicit teaching week; the database uses it
+  // to decide which following week's homework is automatically recognized.
+  function quizDisplayWeek(q){
+    if(Number(q.scheduled_week)>=1 && Number(q.scheduled_week)<=15)return Number(q.scheduled_week);
+    const first=courseWeek1Dates[teacherCourse];
+    if(!first||!q.created_at)return 1;
+    try{
+      const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(q.created_at));
+      const part=t=>parts.find(x=>x.type===t)?.value;
+      const localDate=`${part('year')}-${part('month')}-${part('day')}`;
+      const days=(Date.parse(localDate+'T00:00:00Z')-Date.parse(first+'T00:00:00Z'))/86400000;
+      return Math.min(15,Math.max(1,1+Math.floor(days/7)));
+    }catch{return 1}
+  }
+  qs=(qs||[]).map(q=>({...q,_display_week:quizDisplayWeek(q)}));
   const maxRound=(qs||[]).reduce((m,q)=>Math.max(m,q.round),0);
-  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 시험이 끝날 때마다 해당 차수의 <b>답안 제출 마감</b>을 눌러주세요. 마감 전에는 학생에게 점수·정답이 공개되지 않습니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(qs||[]).map(q=>quizEditor(q,null,null)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;
+  pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 시험이 끝날 때마다 해당 차수의 <b>답안 제출 마감</b>을 눌러주세요. 마감 전에는 학생에게 점수·정답이 공개되지 않습니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(teacherCourse==='chinese1'?'<div class="notice"><b>자동 과제 인정용 실시 주차</b>: 시험을 미리 만들어 두더라도 각 회차의 실제 시험 주차를 아래에서 선택하고 [설정 저장]을 눌러주세요. 각 회차의 만점 학생은 <b>다음 번호 주차 과제</b>가 즉시 자동 인정됩니다. 만점 미달 회차는 다음 번호 주차의 QR 한 번으로 일괄 인정합니다. 계절학기도 수업 순서를 주차로 지정합니다.</div>':'')}${(qs||[]).map(q=>quizEditor(q,null,null)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;
   $('#addQuizBtn').onclick=async()=>{const {error}=await sb.from(`${p}_quizzes`).insert({semester_id:sem.id,round:maxRound+1,answer_key:['A','A','A','A','A'],is_open:false,counted:true});if(error)alert(error.message);else renderTeacherQuiz()};
-  pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const {error}=await sb.from(`${p}_quizzes`).update({answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked}).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';setTimeout(()=>btn.textContent='설정 저장',900)}});
+  pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const changes={answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked};if(teacherCourse==='chinese1')changes.scheduled_week=Number(card.querySelector('[data-qweek]').value);const {error}=await sb.from(`${p}_quizzes`).update(changes).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';setTimeout(()=>btn.textContent='설정 저장',900)}});
   // Attach click handlers before network requests; failed status requests must not leave inert buttons.
   let roster=[],subs=[],statusReady=false,statusError='';
-  const byQuiz=new Map();
+  const byQuiz=new Map(), manualByQuiz=new Map();
   pane.querySelectorAll('[data-missing-quiz]').forEach(btn=>btn.onclick=()=>{
     const qid=Number(btn.dataset.missingQuiz),box=pane.querySelector(`[id="missingQuiz${qid}"]`);
     if(!box)return;
     if(!statusReady){box.innerHTML=`<div class="notice bad">${esc(statusError||'제출현황을 불러오는 중입니다. 잠시 후 다시 눌러주세요.')}</div>`;return}
-    const done=byQuiz.get(qid)||new Set(),missing=roster.filter(st=>!done.has(Number(st.id)));
-    box.innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>';
+    const done=byQuiz.get(qid)||new Set(), manual=manualByQuiz.get(qid)||new Set();
+    const missing=roster.filter(st=>!done.has(Number(st.id))&&!manual.has(Number(st.id)));
+    const adjusted=roster.filter(st=>manual.has(Number(st.id)));
+    box.innerHTML=(missing.length?`<div class="notice"><b>답안 미제출·점수 미인정 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">점수 미인정 학생은 없습니다.</div>')+
+      (adjusted.length?`<div class="notice" style="margin-top:6px"><b>답안 미저장·교수자 수동 점수 인정 ${adjusted.length}명</b><br>${adjusted.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'');
   });
   pane.querySelectorAll('[data-close-quiz]').forEach(btn=>btn.onclick=async()=>{
     if(!statusReady){alert(statusError||'제출현황을 불러오는 중입니다. 잠시 후 다시 시도해주세요.');return}
@@ -1143,21 +1196,27 @@ async function renderTeacherQuiz(){
   try{
     const rr=await Promise.all([
       sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id).order('student_no'),
-      sb.from(`${p}_quiz_submissions`).select('student_id,quiz_id,submitted_at').eq('semester_id',sem.id)
+      sb.from(`${p}_quiz_submissions`).select('student_id,quiz_id,submitted_at').eq('semester_id',sem.id),
+      teacherCourse==='chinese1'?sb.from('c1_quiz_manual_grades').select('student_id,quiz_id,score').eq('semester_id',sem.id):Promise.resolve({data:[],error:null})
     ]);
     if(rr[0].error)throw rr[0].error;
     if(rr[1].error)throw rr[1].error;
+    if(rr[2].error)throw rr[2].error;
     roster=rr[0].data||[];subs=rr[1].data||[];
-    for(const q of qs||[])byQuiz.set(Number(q.id),new Set(subs.filter(x=>Number(x.quiz_id)===Number(q.id)).map(x=>Number(x.student_id))));
+    const manualRows=rr[2].data||[];
+    for(const q of qs||[]){
+      byQuiz.set(Number(q.id),new Set(subs.filter(x=>Number(x.quiz_id)===Number(q.id)).map(x=>Number(x.student_id))));
+      manualByQuiz.set(Number(q.id),new Set(manualRows.filter(x=>Number(x.quiz_id)===Number(q.id)).map(x=>Number(x.student_id))));
+    }
     statusReady=true;
-    for(const q of qs||[]){const st=pane.querySelector(`[data-qstatus="${q.id}"]`);if(st)st.textContent=q.is_closed?'제출 마감됨':`제출 ${(byQuiz.get(Number(q.id))||new Set()).size}/${roster.length}`}
+    for(const q of qs||[]){const st=pane.querySelector(`[data-qstatus="${q.id}"]`);if(st){const manually=(manualByQuiz.get(Number(q.id))||new Set()).size;st.textContent=(q.is_closed?'제출 마감됨 · ':'')+`답안 제출 ${(byQuiz.get(Number(q.id))||new Set()).size}/${roster.length}`+(manually?` · 교수자 점수 인정 ${manually}명`:'')}}
   }catch(e){
     console.error('quiz status load failed',e);
     statusError=`제출현황 확인 실패: ${e?.message||String(e)}`;
     pane.querySelectorAll('[data-qstatus]').forEach(x=>x.textContent='제출현황 확인 실패');
   }
 }
-function quizEditor(q,submitted,total){const vals=[...q.answer_key];while(vals.length<6)vals.push('A');const status=q.is_closed?'제출 마감됨':(submitted==null?'제출현황 확인 중…':`제출 ${submitted}/${total}`);return `<div class="card"><div class="row"><h3 style="margin:0">제${q.round}차</h3><div class="toolbar"><b data-qstatus="${q.id}">${status}</b><button data-missing-quiz="${q.id}">미제출자 보기</button>${q.is_closed?'':`<button data-close-quiz="${q.id}" data-round="${q.round}" class="danger">제${q.round}차 답안 제출 마감</button>`}</div></div><div id="missingQuiz${q.id}" style="margin-top:8px"></div><div class="toolbar" style="margin-top:10px"><label>문항 수<select data-qcount><option value="5" ${q.answer_key.length===5?'selected':''}>5</option><option value="6" ${q.answer_key.length===6?'selected':''}>6</option></select></label><label style="display:flex;align-items:center;gap:6px"><input data-qopen type="checkbox" style="width:auto;min-height:auto" ${q.is_open?'checked':''} ${q.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input data-qcounted type="checkbox" style="width:auto;min-height:auto" ${q.counted?'checked':''}> 중간고사 반영</label></div><div class="ansgrid" style="margin-top:10px">${vals.map((a,i)=>`<label>${i+1}번${i===5?' (6문항 시)':''}<select data-qans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button data-save-quiz="${q.id}" class="primary" style="margin-top:10px">설정 저장</button></div>`}
+function quizEditor(q,submitted,total){const vals=[...q.answer_key];while(vals.length<6)vals.push('A');const status=q.is_closed?'제출 마감됨':(submitted==null?'제출현황 확인 중…':`제출 ${submitted}/${total}`);return `<div class="card"><div class="row"><h3 style="margin:0">제${q.round}차</h3><div class="toolbar"><b data-qstatus="${q.id}">${status}</b><button data-missing-quiz="${q.id}">미제출자 보기</button>${q.is_closed?'':`<button data-close-quiz="${q.id}" data-round="${q.round}" class="danger">제${q.round}차 답안 제출 마감</button>`}</div></div><div id="missingQuiz${q.id}" style="margin-top:8px"></div><div class="toolbar" style="margin-top:10px">${teacherCourse==='chinese1'?`<label>실시 주차 (자동 과제 인정 기준)<select data-qweek>${weekOpts(q._display_week)}</select></label>`:''}<label>문항 수<select data-qcount><option value="5" ${q.answer_key.length===5?'selected':''}>5</option><option value="6" ${q.answer_key.length===6?'selected':''}>6</option></select></label><label style="display:flex;align-items:center;gap:6px"><input data-qopen type="checkbox" style="width:auto;min-height:auto" ${q.is_open?'checked':''} ${q.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input data-qcounted type="checkbox" style="width:auto;min-height:auto" ${q.counted?'checked':''}> 중간고사 반영</label></div><div class="ansgrid" style="margin-top:10px">${vals.map((a,i)=>`<label>${i+1}번${i===5?' (6문항 시)':''}<select data-qans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button data-save-quiz="${q.id}" class="primary" style="margin-top:10px">설정 저장</button></div>`}
 
 async function renderTeacherFinal(){if(isChinese(teacherCourse))return renderTeacherChineseFinal();return renderTeacherLargeFinal()}
 async function renderTeacherChineseFinal(){
@@ -1201,7 +1260,37 @@ async function showEssayDetail(studentId,roster,subMap,questions,semId,sl){const
 }
 
 async function renderTeacherHomework(){if(isChinese(teacherCourse))return renderTeacherChineseHomework();return renderTeacherLargeHomework()}
-async function renderTeacherChineseHomework(){const pane=$('#thomework'),sem=selectedSemester(),p=cPrefix(teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 과제</h3><div class="muted">교수자 휴대폰에 QR을 띄우고, 과제물을 직접 확인한 학생이 자기 휴대폰으로 QR을 찍으면 해당 주차 과제가 확인됩니다.</div><label style="max-width:220px;display:block;margin-top:10px">주차<select id="thwWeek">${weekOpts()}</select></label><div id="thwBody" style="margin-top:10px"></div></div>`;const load=async()=>{const w=Number($('#thwWeek').value);const [{data:h},{data:roster},{data:recs}]=await Promise.all([sb.from(`${p}_homework`).select('*').eq('semester_id',sem.id).eq('week',w).maybeSingle(),sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id),sb.from(`${p}_homework_records`).select('student_id').eq('semester_id',sem.id).eq('week',w)]);const code=h?.code||'',confirmed=new Set((recs||[]).map(x=>x.student_id));$('#thwBody').innerHTML=`<div class="grid g2"><label>인증코드<input id="hwTeacherCode" value="${esc(code)}" placeholder="자동생성 또는 직접 입력"></label><div class="toolbar"><button id="genHwCode">코드 자동생성</button><label style="display:flex;align-items:center;gap:6px"><input id="hwOpen" type="checkbox" style="width:auto;min-height:auto" ${h?.is_open?'checked':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input id="hwCounted" type="checkbox" style="width:auto;min-height:auto" ${h?.counted!==false?'checked':''}> 성적 반영</label></div></div><button id="saveHw" class="primary" style="margin-top:10px">과제 설정 저장</button><div id="hwTeacherMsg" class="muted" style="margin-top:8px"></div><div class="q"><b>확인 현황: ${confirmed.size}/${(roster||[]).length}명</b></div><div id="hwQR"></div>`;$('#genHwCode').onclick=()=>{$('#hwTeacherCode').value=`HW${String(w).padStart(2,'0')}-${Math.random().toString(36).slice(2,8).toUpperCase()}`};$('#saveHw').onclick=async()=>{const code=$('#hwTeacherCode').value.trim();if(!code){msg($('#hwTeacherMsg'),'인증코드를 입력하세요.');return}const row={semester_id:sem.id,week:w,code,is_open:$('#hwOpen').checked,counted:$('#hwCounted').checked};const {error}=await sb.from(`${p}_homework`).upsert(row,{onConflict:'semester_id,week'});if(error)msg($('#hwTeacherMsg'),error.message);else{msg($('#hwTeacherMsg'),'과제 설정을 저장했습니다.',true);drawChineseHomeworkQR(w,code,sem.is_active)}};if(code)drawChineseHomeworkQR(w,code,sem.is_active)};$('#thwWeek').onchange=load;load()}
+async function renderTeacherChineseHomework(){const pane=$('#thomework'),sem=selectedSemester(),p=cPrefix(teacherCourse);pane.innerHTML=`<div class="card"><h3 class="section-title">${esc(courseLabel(teacherCourse))} 과제</h3><div class="muted">${teacherCourse==='chinese1'?'N주차 듣기평가 → N+1주차 과제 검사. 각 회차 만점은 자동 인정되고, 나머지는 이 주차 QR 한 번으로 일괄 인정됩니다. 계절학기도 수업 순서를 주차로 설정합니다.':'교수자 휴대폰에 QR을 띄우고, 과제물을 직접 확인한 학생이 자기 휴대폰으로 QR을 찍으면 해당 주차 과제가 확인됩니다.'}</div><label style="max-width:220px;display:block;margin-top:10px">주차<select id="thwWeek">${weekOpts()}</select></label><div id="thwBody" style="margin-top:10px"></div></div>`;const load=async()=>{const w=Number($('#thwWeek').value);const [{data:h},{data:roster},{data:recs}]=await Promise.all([sb.from(`${p}_homework`).select('*').eq('semester_id',sem.id).eq('week',w).maybeSingle(),sb.from(`${p}_students`).select('id,student_no,name').eq('semester_id',sem.id),sb.from(`${p}_homework_records`).select('student_id').eq('semester_id',sem.id).eq('week',w)]);const code=h?.code||'',confirmed=new Set((recs||[]).map(x=>x.student_id));$('#thwBody').innerHTML=`<div class="grid g2"><label>인증코드<input id="hwTeacherCode" value="${esc(code)}" placeholder="자동생성 또는 직접 입력"></label><div class="toolbar"><button id="genHwCode">코드 자동생성</button><label style="display:flex;align-items:center;gap:6px"><input id="hwOpen" type="checkbox" style="width:auto;min-height:auto" ${h?.is_open?'checked':''}> 학생에게 공개</label><label style="display:flex;align-items:center;gap:6px"><input id="hwCounted" type="checkbox" style="width:auto;min-height:auto" ${h?.counted!==false?'checked':''}> 성적 반영</label></div></div><div class="toolbar" style="margin-top:10px">${teacherCourse==='chinese1'?'<button id="startHwCheck" class="primary">이 주차 과제 검사 시작 · QR 표시</button>':''}<button id="saveHw" class="primary">과제 설정 저장</button></div><div id="hwTeacherMsg" class="muted" style="margin-top:8px"></div><div class="q"><b>확인 현황: ${confirmed.size}/${(roster||[]).length}명</b></div><div id="hwQR"></div>`;$('#genHwCode').onclick=()=>{$('#hwTeacherCode').value=`HW${String(w).padStart(2,'0')}-${Math.random().toString(36).slice(2,8).toUpperCase()}`};$('#saveHw').onclick=async()=>{const code=$('#hwTeacherCode').value.trim();if(!code){msg($('#hwTeacherMsg'),'인증코드를 입력하세요.');return}const row={semester_id:sem.id,week:w,code,is_open:$('#hwOpen').checked,counted:$('#hwCounted').checked};const {error}=await sb.from(`${p}_homework`).upsert(row,{onConflict:'semester_id,week'});if(error)msg($('#hwTeacherMsg'),error.message);else{msg($('#hwTeacherMsg'),'과제 설정을 저장했습니다.',true);drawChineseHomeworkQR(w,code,sem.is_active)}};
+    if(teacherCourse==='chinese1')$('#startHwCheck').onclick=async()=>{
+      if(!sem.is_active){msg($('#hwTeacherMsg'),'비활성 학기에서는 학생에게 QR을 공개할 수 없습니다.');return}
+      const btn=$('#startHwCheck');btn.disabled=true;
+      const randomBytes=new Uint8Array(5);if(window.crypto?.getRandomValues)window.crypto.getRandomValues(randomBytes);else randomBytes.forEach((_,i)=>randomBytes[i]=Math.floor(Math.random()*256));
+      const generated=`HW${String(w).padStart(2,'0')}-`+[...randomBytes].map(x=>x.toString(16).padStart(2,'0')).join('').toUpperCase();
+      const newCode=$('#hwTeacherCode').value.trim()||generated;
+      const {error}=await sb.from(`${p}_homework`).upsert({semester_id:sem.id,week:w,code:newCode,is_open:true,counted:true},{onConflict:'semester_id,week'});
+      btn.disabled=false;
+      if(error){msg($('#hwTeacherMsg'),error.message);return}
+      $('#hwTeacherCode').value=newCode;$('#hwOpen').checked=true;$('#hwCounted').checked=true;
+      drawChineseHomeworkQR(w,newCode,sem.is_active);
+      msg($('#hwTeacherMsg'),`${w}주차 과제 검사 QR을 공개했습니다. 과제를 검사받은 학생에게만 QR을 보여주세요.`,true);
+      if(teacherCourse==='chinese1')renderTeacherChinese1HomeworkSummary(sem.id,w);
+    };
+    if(code)drawChineseHomeworkQR(w,code,sem.is_active);
+    if(teacherCourse==='chinese1')renderTeacherChinese1HomeworkSummary(sem.id,w);
+  };$('#thwWeek').onchange=load;load()}
+async function renderTeacherChinese1HomeworkSummary(semesterId,week){
+  const pane=$('#thwBody');if(!pane)return;
+  let box=$('#hwQuizSummary');
+  if(!box){box=document.createElement('div');box.id='hwQuizSummary';box.className='q';pane.appendChild(box)}
+  box.innerHTML='<div class="muted">회차별 인정 현황 불러오는 중…</div>';
+  const {data,error}=await sb.rpc('c1_get_teacher_quiz_homework_summary',{p_semester_id:semesterId,p_homework_week:week});
+  if(!$('#hwQuizSummary')||Number($('#thwWeek')?.value)!==Number(week))return;
+  if(error){box.innerHTML=`<div class="bad">회차별 현황 확인 실패: ${esc(error.message)}</div>`;return}
+  const rows=data||[];
+  box.innerHTML=`<div class="row"><b>${week}주차 검사 · ${week-1}주차 듣기평가별 제출 인정</b><button id="refreshHwQuizSummary" class="smallbtn">현황 새로고침</button></div>`+
+    (rows.length?`<div class="tablewrap"><table><thead><tr><th>듣기평가</th><th>만점 자동</th><th>QR 인정</th><th>미인정</th></tr></thead><tbody>${rows.map(r=>`<tr><td>제${r.quiz_round}차</td><td>${r.auto_count}명</td><td>${r.qr_count}명</td><td>${r.pending_count}명</td></tr>`).join('')}</tbody></table></div>`:'<div class="muted">이 주차에 연결된 듣기평가가 없습니다.</div>');
+  $('#refreshHwQuizSummary').onclick=()=>renderTeacherChinese1HomeworkSummary(semesterId,week);
+}
 function drawChineseHomeworkQR(week,code,isActive){const box=$('#hwQR');if(!box)return;const url=baseUrl();url.searchParams.set('course',teacherCourse);url.searchParams.set('homework_week',week);url.searchParams.set('code',code);box.innerHTML=`<div class="muted">${isActive?'교수자 휴대폰에 띄울 과제 확인 QR':'이 학기는 비활성 학기이므로 QR은 보관용입니다.'}</div><div id="hwQRImg" class="qrbox" style="margin-top:8px"></div><div class="muted" style="word-break:break-all;margin-top:6px">${esc(url.href)}</div>`;new QRCode($('#hwQRImg'),{text:url.href,width:220,height:220})}
 async function renderTeacherLargeHomework(){
   clearInterval(homeworkQrTimer);homeworkQrTimer=null;const pane=$('#thomework'),sem=selectedSemester(),sl=course(teacherCourse).slot;pane.innerHTML=`<div class="card bigqr"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 기말 과제 제출 QR</h3><div class="muted">기말고사 당일 한 번 사용 · 학생별 1회만 인정 · 여러 학생 동시 인증 가능</div></div><div><button id="startDynQR" class="primary">과제 QR 시작</button> <button id="stopDynQR" class="danger">QR 종료</button></div></div><div class="notice" style="margin-top:10px">학생은 퇴실하면서 실물 과제를 교수님께 제출한 직후 교수님 휴대폰의 QR을 찍습니다. QR은 약 3초마다 바뀌고 각 인증값은 5초만 유효합니다. 학생 휴대폰은 미리 해당 과목에 로그인해 두는 것이 좋습니다.</div><div id="dynStatus" class="q"><b>상태 확인 중…</b></div><div id="dynQR" class="qrbox"></div><div id="dynMsg" class="muted" style="margin-top:8px"></div></div>`;
