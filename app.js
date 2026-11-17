@@ -919,7 +919,7 @@ async function renderTeacherAttendance(){
 
     $('#taBody').innerHTML=`
       ${auto?'<div class="notice" style="margin-bottom:10px"><b>1주차 자동 출석 고정</b><br>명단이 2주차에 확정되므로 모든 학생의 1주차 1·2·3교시는 자동으로 출석 처리됩니다. 출석 단어 입력과 주차 확정 작업이 필요하지 않습니다.</div>':''}
-      ${!auto&&!week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교시별 출석 열기·마감</b><br><b style="color:#15803d">초록색 = 학생 입력 가능</b> · <b style="color:#dc2626">빨간색 = 마감</b> · 회색 = 아직 열지 않음. 종료 출석을 열면 그 교시의 시작 출석은 자동 마감됩니다.</div>':''}
+      ${!auto&&!week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교시별 출석 열기·마감</b><br><b style="color:#15803d">초록색 = 출석 입력 진행 중(교수자 화면)</b> · <b style="color:#dc2626">빨간색 = 출석 입력 마감</b> · <b style="color:#6b7280">회색 = 출석 시작 전 대기</b>.<br>학생 화면에서는 파란색 = 입력 가능, 초록색 = 출석 확인 완료, 빨간색 = 미완료 상태에서 마감, 회색 = 대기로 표시됩니다. 종료 출석을 열면 그 교시의 시작 출석은 자동 마감됩니다.</div>':''}
       ${!auto&&week?.finalized?'<div class="notice" style="margin-bottom:10px"><b>교수자 출석 수정 가능</b><br>학생별 상태를 바꾼 뒤 <b>수정 저장</b>을 누르세요. 학생이 실제 입력한 시간은 수정해도 보존되며, 교수 수정 이력도 별도로 기록됩니다.</div>':''}
       ${!auto&&!week?.finalized?'<div class="muted" style="margin-bottom:10px">학생별 출석 수정은 먼저 이 주차의 출석을 확정한 뒤 사용할 수 있습니다. <b>기록 보기</b>는 확정 전에도 사용할 수 있습니다.</div>':''}
       <div class="grid g3">
