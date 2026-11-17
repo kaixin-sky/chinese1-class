@@ -1,3 +1,4 @@
+// 2026-11-17 4과목 답안 제출/완료 서버저장검증 UI
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const C=window.APP_CONFIG||{};
 const COURSES={
@@ -243,6 +244,24 @@ async function renderStudentAttendance(){
   refresh(true);
 }
 
+// 답안 제출 상태는 서버 확인 결과를 기준으로만 초록색 "완료"로 바꾼다.
+const completedSubmitButton=()=>'<button type="button" disabled aria-label="서버 저장 확인 완료" style="background:#15803d;border:1px solid #15803d;color:#fff;opacity:1;cursor:default;font-weight:800">완료</button>';
+function setSubmitButtonState(btn,state){
+  if(!btn)return;
+  btn.disabled=state!=='ready';
+  btn.textContent=state==='done'?'완료':state==='pending'?'제출 중…':'제출';
+  btn.style.background=state==='done'?'#15803d':'#2563eb';
+  btn.style.borderColor=state==='done'?'#15803d':'#2563eb';
+  btn.style.color='#fff';btn.style.opacity='1';btn.style.fontWeight='800';
+  btn.setAttribute('aria-label',state==='done'?'서버 저장 확인 완료':state==='pending'?'서버 저장 중':'답안 제출');
+}
+async function verifyChineseExamSubmission(p,isFinal,qid){
+  try {
+    const r=isFinal?await sb.rpc(`${p}_get_final_status`,{p_token:studentToken}):await sb.rpc(`${p}_get_quiz_result`,{p_token:studentToken,p_quiz_id:qid});
+    if(r.error||!r.data?.ok|| (isFinal&&!r.data.submitted))return {ok:false};
+    return {ok:true,submitted_at:r.data.submitted_at};
+  } catch(e){return {ok:false}}
+}
 function questionUI(n,prefix){return Array.from({length:n},(_,i)=>`<div class="q"><b>${i+1}번</b><div class="choices">${['A','B','C','D'].map(c=>`<label class="choice"><input type="radio" name="${prefix}${i}" value="${c}">${c}</label>`).join('')}</div></div>`).join('')}
 function collectAnswers(n,prefix){const a=[];for(let i=0;i<n;i++){const c=document.querySelector(`input[name="${prefix}${i}"]:checked`);if(!c)return null;a.push(c.value)}return a}
 function mcResult(r,ans){return `<div class="score">${r.score}/${r.total}점</div>${ans.map((a,i)=>`<div>${i+1}번: 선택 ${esc(a)} ${a===r.correct[i]?'✅':`❌ → 정답 <b>${esc(r.correct[i])}</b>`}</div>`).join('')}`}
@@ -252,7 +271,7 @@ async function renderChineseQuiz(){
   if(error){$('#quizPane').innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
   $('#quizPane').innerHTML=`<div class="card"><h3 class="section-title">듣기평가</h3>${(data||[]).length?(data||[]).map(q=>{
     const time=q.submitted_at?fmtDT(q.submitted_at):'';
-    const state=q.submitted?(q.manual_grade?`<span class="ok">교수자 수동 인정 · ${q.score}/${q.total}점</span><button data-qresult="${q.id}">인정 점수 보기</button>`:(q.closed?`<span class="ok">제출완료 · ${q.score}/${q.total}</span><button data-qresult="${q.id}">정답·오답 보기</button>`:`<span class="ok">제출완료${time?` · ${time}`:''}</span><span class="badge">교수자 마감 후 결과 공개</span>`)):`<button data-q="${q.id}" data-total="${q.total}" class="primary">응시</button>`;
+    const state=q.submitted?(q.manual_grade?`<span class="ok">교수자 수동 인정 · ${q.score}/${q.total}점</span><button data-qresult="${q.id}">인정 점수 보기</button>`:(q.closed?`${completedSubmitButton()}<span class="ok">${q.score}/${q.total}점</span><button data-qresult="${q.id}">정답·오답 보기</button>`:`${completedSubmitButton()}<span class="muted">서버 저장 확인${time?` · ${time}`:''}</span><span class="badge">교수자 마감 후 결과 공개</span>`)):`<button data-q="${q.id}" data-total="${q.total}" class="primary">응시</button>`;
     return `<div class="q"><div class="row"><b>제${q.round}차 · ${q.total}문항</b><div class="toolbar">${state}</div></div><div id="qarea${q.id}"></div></div>`
   }).join(''):'<div class="muted">현재 공개된 시험이 없습니다.</div>'}</div>`;
   $('#quizPane').querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>showChineseExam(Number(b.dataset.q),Number(b.dataset.total),false));
@@ -260,22 +279,38 @@ async function renderChineseQuiz(){
 }
 function showChineseExam(qid,n,isFinal){
   const p=cPrefix(student.course),area=isFinal?$('#finalPane'):$('#qarea'+qid),prefix=isFinal?'f-':`q${qid}-`;
-  // Each exam has its own submit button/message. Never redraw the other open exams after saving one.
-  area.innerHTML=(isFinal?`<div class="card"><h3>기말고사 20문항</h3>${examLaptopGuide(false)}`:'')+questionUI(n,prefix)+`<button data-submit-exam class="primary">답안지 제출</button><div data-exam-message style="margin-top:10px"></div>`+(isFinal?'</div>':'');
+  // 회차별 답안지는 독립적으로 유지한다. 다른 시험의 응시 화면을 다시 그리지 않는다.
+  area.innerHTML=(isFinal?`<div class="card"><h3>기말고사 20문항</h3>${examLaptopGuide(false)}`:'')+questionUI(n,prefix)+`<button type="button" data-submit-exam class="primary">제출</button><div data-exam-message aria-live="polite" style="margin-top:10px"></div>`+(isFinal?'</div>':'');
   const btn=area.querySelector('[data-submit-exam]'), examMessage=area.querySelector('[data-exam-message]');
+  setSubmitButtonState(btn,'ready');
   btn.onclick=async()=>{
-    const ans=collectAnswers(n,prefix);if(!ans){msg(examMessage,'모든 문항에 답하세요.');return}
+    if(btn.disabled)return;
+    const ans=collectAnswers(n,prefix);
+    if(!ans){msg(examMessage,'모든 문항에 답하세요.');return}
     if(!confirm('답안을 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;
-    btn.disabled=true;btn.textContent='제출 중…';
+    setSubmitButtonState(btn,'pending');
+    examMessage.textContent='서버에 답안을 저장하고 있습니다. 이 화면을 닫지 마세요.';examMessage.className='muted';
     let r;
-    try { r=isFinal?await sb.rpc(`${p}_submit_final`,{p_token:studentToken,p_answers:ans}):await sb.rpc(`${p}_submit_quiz`,{p_token:studentToken,p_quiz_id:qid,p_answers:ans}); }
-    catch(e){btn.disabled=false;btn.textContent='답안지 제출';msg(examMessage,'네트워크 오류입니다. 제출 여부를 확인한 뒤 다시 시도하세요.');return}
-    if(r.error||!r.data?.ok){btn.disabled=false;btn.textContent='답안지 제출';msg(examMessage,r.data?.message||r.error?.message||'제출되지 않았습니다. 다시 눌러주세요.');return}
-    const t=r.data.submitted_at?fmtDT(r.data.submitted_at):fmtDT(new Date().toISOString());
-    area.innerHTML=`<div class="card"><div class="ok"><b>답안지 제출 완료</b></div><div class="muted" style="margin-top:8px">서버 저장 시각: ${esc(t)}</div><div class="notice" style="margin-top:10px">교수님이 답안 제출을 마감한 뒤 점수와 정답·오답을 확인할 수 있습니다.</div></div>`;
+    try{r=isFinal?await sb.rpc(`${p}_submit_final`,{p_token:studentToken,p_answers:ans}):await sb.rpc(`${p}_submit_quiz`,{p_token:studentToken,p_quiz_id:qid,p_answers:ans});}
+    catch(e){setSubmitButtonState(btn,'ready');msg(examMessage,'네트워크 오류입니다. 제출 여부를 확인한 뒤 다시 시도하세요.');return}
+    if(r.error||!r.data?.ok){
+      setSubmitButtonState(btn,'ready');
+      msg(examMessage,r.data?.message||r.error?.message||'제출이 확인되지 않았습니다. 답안을 유지한 상태에서 다시 확인하세요.');
+      return;
+    }
+    examMessage.textContent='서버에 저장된 답안을 다시 확인하고 있습니다…';examMessage.className='muted';
+    const verified=await verifyChineseExamSubmission(p,isFinal,qid);
+    if(!verified.ok){
+      setSubmitButtonState(btn,'ready');
+      msg(examMessage,'제출 요청은 처리됐지만 서버 저장 상태를 재확인하지 못했습니다. 먼저 새로고침해서 제출 상태를 확인하세요.');
+      return;
+    }
+    const t=fmtDT(verified.submitted_at||r.data.submitted_at);
+    setSubmitButtonState(btn,'done');
+    area.innerHTML=`<div class="card"><div class="row">${completedSubmitButton()}<span class="ok"><b>서버 저장 확인</b></span></div><div class="muted" style="margin-top:8px">서버 저장 시각: ${esc(t)}</div><div class="notice" style="margin-top:10px">교수님이 답안 제출을 마감한 뒤 점수와 정답·오답을 확인할 수 있습니다.</div></div>`;
     if(!isFinal){
       const openButton=$(`[data-q="${qid}"]`);
-      if(openButton)openButton.outerHTML=`<span class="ok">제출완료 · ${esc(t)}</span>`;
+      if(openButton)openButton.outerHTML=`${completedSubmitButton()}<span class="muted">서버 저장 확인 · ${esc(t)}</span>`;
       if(student?.course==='chinese1' && $('#hwweek'))renderMyChinese1QuizHomework(Number($('#hwweek').value));
     }
     renderStudentScores();
@@ -284,12 +319,12 @@ function showChineseExam(qid,n,isFinal){
 async function showChineseQuizResult(qid){
   const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_get_quiz_result`,{p_token:studentToken,p_quiz_id:qid});
   if(error||!data?.ok)return;
-  if(!data.closed){$('#qarea'+qid).innerHTML=`<div class="card"><div class="ok">답안지 제출 완료</div><div class="muted">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div><div class="notice">교수자 마감 후 결과가 공개됩니다.</div></div>`;return}
+  if(!data.closed){$('#qarea'+qid).innerHTML=`<div class="card">${completedSubmitButton()}<div class="muted">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div><div class="notice">교수자 마감 후 결과가 공개됩니다.</div></div>`;return}
   if(data.manual_grade){
     $('#qarea'+qid).innerHTML=`<div class="card"><div class="score">${data.score}/${data.total}점</div><div class="notice">교수자가 답안 미저장 상황을 확인하고 수동으로 인정한 점수입니다. 실제 제11차 답안·문항별 정오 기록은 저장되지 않았습니다.</div></div>`;
     return;
   }
-  $('#qarea'+qid).innerHTML=`<div class="card">${mcResult(data,data.answers)}</div>`
+  $('#qarea'+qid).innerHTML=`<div class="card">${completedSubmitButton()}${mcResult(data,data.answers)}</div>`
 }
 
 async function renderStudentFinal(){if(!studentToken)return;if(isChinese(student.course))return renderChineseFinal();return renderLargeFinal();}
@@ -297,8 +332,8 @@ async function renderChineseFinal(){
   const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_get_final_status`,{p_token:studentToken});
   if(error||!data?.ok){$('#finalPane').innerHTML='<div class="card bad">기말고사 상태를 확인할 수 없습니다.</div>';return}
   if(data.submitted){
-    if(!data.closed){$('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}<div class="ok"><b>답안지 제출 완료</b></div><div class="muted">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div><div class="notice" style="margin-top:10px">교수님이 답안 제출을 마감한 뒤 점수와 정답·오답이 공개됩니다.</div></div>`;return}
-    $('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}<div class="ok">제출완료 · ${data.score}/20 · ${fmt(data.converted)}/30</div>${mcResult(data,data.answers)}</div>`;return
+    if(!data.closed){$('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}${completedSubmitButton()}<div class="muted">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div><div class="notice" style="margin-top:10px">교수님이 답안 제출을 마감한 뒤 점수와 정답·오답이 공개됩니다.</div></div>`;return}
+    $('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}${completedSubmitButton()}<div class="ok">${data.score}/20 · ${fmt(data.converted)}/30</div>${mcResult(data,data.answers)}</div>`;return
   }
   if(data.closed){$('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}<div class="bad">기말고사 답안 제출이 마감되었습니다.</div></div>`;return}
   if(data.open){$('#finalPane').innerHTML=`<div class="card">${examLaptopGuide(false)}<button id="startFinal" class="primary">기말고사 시작</button></div>`;$('#startFinal').onclick=()=>showChineseExam(1,20,true);return}
@@ -308,7 +343,7 @@ async function renderLargeFinal(){
   clearInterval(draftTimer);draftTimer=null;largeExamAccessCode='';
   const {data,error}=await sb.rpc('lg_get_final_status',{p_token:studentToken});
   if(error||!data?.ok){$('#finalPane').innerHTML='<div class="card bad">기말고사 상태를 확인할 수 없습니다.</div>';return}
-  if(data.submitted){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="ok">최종 제출 완료${data.submitted_at?` · ${esc(fmtDT(data.submitted_at))}`:''}</div><div class="muted" style="margin-top:8px">${!data.results_published?'기말고사 점수는 교수자 최종 승인 후 공개됩니다.':`최종 기말고사 점수 ${data.final_score==null?'-':fmt(data.final_score)} / 30`}</div></div>`;return}
+  if(data.submitted){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}${completedSubmitButton()}<div class="ok" style="margin-top:8px">서버 저장 확인${data.submitted_at?` · ${esc(fmtDT(data.submitted_at))}`:''}</div><div class="muted" style="margin-top:8px">${!data.results_published?'기말고사 점수는 교수자 최종 승인 후 공개됩니다.':`최종 기말고사 점수 ${data.final_score==null?'-':fmt(data.final_score)} / 30`}</div></div>`;return}
   if(data.closed){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="bad">기말고사 답안 제출이 마감되었습니다. 임시저장 및 최종제출을 할 수 없습니다.</div></div>`;return}
   if(!data.open){$('#finalPane').innerHTML=`<div class="card">${examLaptopGuide(data.needs_code)}<div class="muted">기말고사가 아직 공개되지 않았습니다.</div></div>`;return}
   $('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="notice">노트북으로 답안을 작성합니다. 답안은 임시저장할 수 있고 최종 제출 후에는 수정할 수 없습니다.</div>${data.needs_code?'<label style="display:block;margin-top:12px">시험 접속코드<input id="examAccessCode" autocomplete="off"></label>':''}<button id="openEssay" class="primary" style="margin-top:10px">문제 열기</button><div id="essayStartMsg" class="muted" style="margin-top:8px"></div></div>`;
@@ -318,14 +353,44 @@ async function startLargeEssay(){
   const {data,error}=await sb.rpc('lg_get_final_exam',{p_token:studentToken,p_access_code:largeExamAccessCode});
   if(error||!data?.ok){msg($('#essayStartMsg'),data?.message||error?.message||'시험을 열 수 없습니다.');return}
   const qs=data.questions||[],answers=data.answers||{};
-  $('#finalPane').innerHTML=`<div class="card essay"><div class="row"><div><h3 class="section-title">논술형 기말고사</h3><div class="muted">전체 ${fmt(qs.reduce((s,q)=>s+Number(q.max_score||0),0),0)}점</div></div><div id="draftStatus" class="muted">답안 작성 중</div></div>${qs.map((q,i)=>`<div class="q"><div class="row"><b>${i+1}. ${esc(q.prompt)}</b><span class="badge">${fmt(q.max_score,0)}점</span></div><textarea data-essay-id="${esc(q.id)}" placeholder="답안을 작성하세요">${esc(answers[q.id]||'')}</textarea><div class="muted right"><span data-count-for="${esc(q.id)}">${String(answers[q.id]||'').length}</span>자</div></div>`).join('')}<div class="row"><button id="saveDraft">임시저장</button><button id="submitEssay" class="primary">최종 제출</button></div><div id="essayMsg" class="muted" style="margin-top:8px"></div></div>`;
+  $('#finalPane').innerHTML=`<div class="card essay"><div class="row"><div><h3 class="section-title">논술형 기말고사</h3><div class="muted">전체 ${fmt(qs.reduce((s,q)=>s+Number(q.max_score||0),0),0)}점</div></div><div id="draftStatus" class="muted">답안 작성 중</div></div>${qs.map((q,i)=>`<div class="q"><div class="row"><b>${i+1}. ${esc(q.prompt)}</b><span class="badge">${fmt(q.max_score,0)}점</span></div><textarea data-essay-id="${esc(q.id)}" placeholder="답안을 작성하세요">${esc(answers[q.id]||'')}</textarea><div class="muted right"><span data-count-for="${esc(q.id)}">${String(answers[q.id]||'').length}</span>자</div></div>`).join('')}<div class="row"><button id="saveDraft">임시저장</button><button id="submitEssay" class="primary">제출</button></div><div id="essayMsg" class="muted" style="margin-top:8px"></div></div>`;
   $('#finalPane').querySelectorAll('[data-essay-id]').forEach(t=>t.oninput=()=>{const c=$(`[data-count-for="${CSS.escape(t.dataset.essayId)}"]`);if(c)c.textContent=t.value.length});
-  $('#saveDraft').onclick=()=>saveLargeDraft(false);$('#submitEssay').onclick=submitLargeEssay;
+  $('#saveDraft').onclick=()=>saveLargeDraft(false);setSubmitButtonState($('#submitEssay'),'ready');$('#submitEssay').onclick=submitLargeEssay;
   clearInterval(draftTimer);draftTimer=setInterval(()=>saveLargeDraft(true),30000);
 }
 function collectEssayAnswers(){const o={};$('#finalPane').querySelectorAll('[data-essay-id]').forEach(t=>o[t.dataset.essayId]=t.value);return o}
 async function saveLargeDraft(auto=false){const answers=collectEssayAnswers();const {data,error}=await sb.rpc('lg_save_final_draft',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers});const el=$('#draftStatus')||$('#essayMsg');if(error||!data?.ok){if(data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}if(!auto)msg(el,data?.message||error?.message||'임시저장 실패');return}if(el){el.textContent=`${auto?'자동':'임시'}저장 완료 ${new Date().toLocaleTimeString()}`;el.className='ok'}}
-async function submitLargeEssay(){if(!confirm('최종 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;const answers=collectEssayAnswers();const btn=$('#submitEssay');if(btn){btn.disabled=true;btn.textContent='제출 중…'}const {data,error}=await sb.rpc('lg_submit_final',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers});if(error||!data?.ok){if(btn){btn.disabled=false;btn.textContent='최종 제출'}if(data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}msg($('#essayMsg'),data?.message||error?.message||'제출 실패');return}clearInterval(draftTimer);draftTimer=null;$('#finalPane').innerHTML=`<div class="card"><div class="ok"><b>기말고사 답안 최종 제출 완료</b></div><div class="muted" style="margin-top:8px">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div></div>`;renderStudentScores()}
+async function submitLargeEssay(){
+  const btn=$('#submitEssay');if(!btn||btn.disabled)return;
+  if(!confirm('최종 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;
+  const answers=collectEssayAnswers();
+  setSubmitButtonState(btn,'pending');
+  const statusEl=$('#essayMsg');if(statusEl){statusEl.className='muted';statusEl.textContent='서버에 답안을 저장하고 있습니다. 잠시 그대로 두세요.'}
+  let r;
+  try{r=await sb.rpc('lg_submit_final',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers})}
+  catch(e){setSubmitButtonState(btn,'ready');msg($('#essayMsg'),'네트워크 오류입니다. 제출 상태 확인 후 다시 시도하세요.');return}
+  if(r.error||!r.data?.ok){
+    setSubmitButtonState(btn,'ready');
+    if(r.data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}
+    msg($('#essayMsg'),r.data?.message||r.error?.message||'제출되지 않았습니다.');
+    return;
+  }
+  let verified=false,storedTime=r.data.submitted_at;
+  try{
+    const check=await sb.rpc('lg_get_final_status',{p_token:studentToken});
+    verified=!check.error&&check.data?.ok===true&&check.data?.submitted===true;
+    if(verified)storedTime=check.data.submitted_at||storedTime;
+  }catch(e){}
+  if(!verified){
+    setSubmitButtonState(btn,'ready');
+    msg($('#essayMsg'),'제출 요청은 처리됐지만 서버 저장 상태를 재확인하지 못했습니다. 새로고침 후 제출 상태를 확인하세요.');
+    return;
+  }
+  clearInterval(draftTimer);draftTimer=null;
+  setSubmitButtonState(btn,'done');
+  $('#finalPane').innerHTML=`<div class="card"><div class="row">${completedSubmitButton()}<span class="ok"><b>기말고사 답안 서버 저장 확인</b></span></div><div class="muted" style="margin-top:8px">서버 저장 시각: ${esc(fmtDT(storedTime))}</div></div>`;
+  renderStudentScores();
+}
 
 async function renderMyChinese1QuizHomework(week){
   if(student?.course!=='chinese1'||!studentToken)return;
