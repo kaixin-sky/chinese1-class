@@ -1,6 +1,11 @@
+// 2026-11-18 중복 클릭 무해 처리: 출석 시작·종료/답안 제출 서버 재확인 + 저장 잠금
 // 2026-11-17 통합 최종본: 시험 추가/권한 수정 + QR 학기 연동 + 과제 자동 인정 + 4과목 제출 확인
 // 2026-11-17 4과목 답안 제출/완료 서버저장검증 UI
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+// 같은 요청이 진행 중이면 같은 버튼/다른 탭 재클릭에도 중복 요청하지 않는다.
+const activeWriteOperations=new Set();
+// 출석 관리 버튼이 새 상태로 바뀌어도 빠른 두 번째 클릭이 반대 동작이 되지 않도록 한다.
+const recentGateActions=new Map();
 const C=window.APP_CONFIG||{};
 const COURSES={
   chinese1:{label:'소형1',defaultName:'중국어1',type:'chinese',prefix:'c1',slot:'small1'},
@@ -107,6 +112,7 @@ async function renderStudentAttendance(){
 
   let weekData=[];
   let lastSuccess=null;
+  let attendanceSubmitting=false;
 
   const badge=(label,state,ok,auto=false)=>{
     // 주차 확정 후에도 이미 확인된 출석은 반드시 '출석 완료'로 표시한다.
@@ -153,6 +159,9 @@ async function renderStudentAttendance(){
       btn.textContent=label;btn.disabled=disabled;
       btn.style.background=bg;btn.style.borderColor=bg;btn.style.color='white';
     };
+    if(attendanceSubmitting){
+      btn.disabled=true;btn.textContent='확인 중…';return;
+    }
     if(w===1){
       state.innerHTML='<span style="color:#15803d">1주차 · 자동 출석</span>';
       hint.textContent='1주차는 학생 명단 미확정으로 1·2·3교시를 자동 출석 처리합니다.';
@@ -213,10 +222,13 @@ async function renderStudentAttendance(){
   $('#attword').oninput=()=>{if(lastSuccess){lastSuccess=null;updateSelectedHint()}};
 
   $('#attsub').onclick=async()=>{
-    if(Number($('#aw').value)===1)return;
+    if(attendanceSubmitting||Number($('#aw').value)===1)return;
     const word=$('#attword').value.trim();
     if(!word){msg($('#attmsg'),'단어를 입력하세요.');return}
     const btn=$('#attsub'),weekEl=$('#aw'),periodEl=$('#ap'),wordEl=$('#attword');
+    const actionKey=`attendance:${studentToken}:${weekEl.value}:${periodEl.value}`;
+    if(activeWriteOperations.has(actionKey))return;
+    attendanceSubmitting=true;activeWriteOperations.add(actionKey);
     const oldText=btn.textContent;
     btn.disabled=true;weekEl.disabled=true;periodEl.disabled=true;wordEl.disabled=true;btn.textContent='확인 중…';
     clearMsg($('#attmsg'));
@@ -239,6 +251,7 @@ async function renderStudentAttendance(){
       lastSuccess=null;
       msg($('#attmsg'),`서버 연결에 실패했습니다. 다시 눌러주세요. 입력한 단어는 지우지 않았습니다. (${e?.message||'통신 오류'})`);
     }finally{
+      attendanceSubmitting=false;activeWriteOperations.delete(actionKey);
       weekEl.disabled=false;periodEl.disabled=false;wordEl.disabled=false;
       applyMode(false);
       if(!lastSuccess)btn.textContent=oldText==='확인 중…'?'출석 확인':oldText;
@@ -288,16 +301,20 @@ function showChineseExam(qid,n,isFinal){
   const btn=area.querySelector('[data-submit-exam]'), examMessage=area.querySelector('[data-exam-message]');
   setSubmitButtonState(btn,'ready');
   btn.onclick=async()=>{
-    if(btn.disabled)return;
+    const actionKey=`exam:${studentToken}:${isFinal?'final':qid}`;
+    if(btn.disabled||activeWriteOperations.has(actionKey))return;
     const ans=collectAnswers(n,prefix);
     if(!ans){msg(examMessage,'모든 문항에 답하세요.');return}
     if(!confirm('답안을 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;
+    if(activeWriteOperations.has(actionKey))return;
+    activeWriteOperations.add(actionKey);
     setSubmitButtonState(btn,'pending');
     examMessage.textContent='서버에 답안을 저장하고 있습니다. 이 화면을 닫지 마세요.';examMessage.className='muted';
     let r;
     try{r=isFinal?await sb.rpc(`${p}_submit_final`,{p_token:studentToken,p_answers:ans}):await sb.rpc(`${p}_submit_quiz`,{p_token:studentToken,p_quiz_id:qid,p_answers:ans});}
-    catch(e){setSubmitButtonState(btn,'ready');msg(examMessage,'네트워크 오류입니다. 제출 여부를 확인한 뒤 다시 시도하세요.');return}
+    catch(e){activeWriteOperations.delete(actionKey);setSubmitButtonState(btn,'ready');msg(examMessage,'네트워크 오류입니다. 제출 여부를 확인한 뒤 다시 시도하세요.');return}
     if(r.error||!r.data?.ok){
+      activeWriteOperations.delete(actionKey);
       setSubmitButtonState(btn,'ready');
       msg(examMessage,r.data?.message||r.error?.message||'제출이 확인되지 않았습니다. 답안을 유지한 상태에서 다시 확인하세요.');
       return;
@@ -305,6 +322,7 @@ function showChineseExam(qid,n,isFinal){
     examMessage.textContent='서버에 저장된 답안을 다시 확인하고 있습니다…';examMessage.className='muted';
     const verified=await verifyChineseExamSubmission(p,isFinal,qid);
     if(!verified.ok){
+      activeWriteOperations.delete(actionKey);
       setSubmitButtonState(btn,'ready');
       msg(examMessage,'제출 요청은 처리됐지만 서버 저장 상태를 재확인하지 못했습니다. 먼저 새로고침해서 제출 상태를 확인하세요.');
       return;
@@ -363,19 +381,49 @@ async function startLargeEssay(){
   clearInterval(draftTimer);draftTimer=setInterval(()=>saveLargeDraft(true),30000);
 }
 function collectEssayAnswers(){const o={};$('#finalPane').querySelectorAll('[data-essay-id]').forEach(t=>o[t.dataset.essayId]=t.value);return o}
-async function saveLargeDraft(auto=false){const answers=collectEssayAnswers();const {data,error}=await sb.rpc('lg_save_final_draft',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers});const el=$('#draftStatus')||$('#essayMsg');if(error||!data?.ok){if(data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}if(!auto)msg(el,data?.message||error?.message||'임시저장 실패');return}if(el){el.textContent=`${auto?'자동':'임시'}저장 완료 ${new Date().toLocaleTimeString()}`;el.className='ok'}}
+function resumeLargeDraftAutoSave(){
+  if(!draftTimer&&$('#submitEssay'))draftTimer=setInterval(()=>saveLargeDraft(true),30000);
+}
+async function saveLargeDraft(auto=false){
+  const key=`draft:${studentToken}`,btn=$('#saveDraft');
+  if(activeWriteOperations.has(key)||activeWriteOperations.has(`essay:${studentToken}`))return;
+  activeWriteOperations.add(key);
+  if(btn&&!auto){btn.disabled=true;btn.textContent='저장 중…'}
+  try{
+    const answers=collectEssayAnswers();
+    const {data,error}=await sb.rpc('lg_save_final_draft',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers});
+    const el=$('#draftStatus')||$('#essayMsg');
+    if(error||!data?.ok){
+      if(data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}
+      if(!auto)msg(el,data?.message||error?.message||'임시저장 실패');
+      return;
+    }
+    if(el){el.textContent=`${auto?'자동':'임시'}저장 완료 ${new Date().toLocaleTimeString()}`;el.className='ok'}
+  }catch(e){if(!auto)msg($('#draftStatus')||$('#essayMsg'),e?.message||'임시저장 통신 오류')}
+  finally{
+    activeWriteOperations.delete(key);
+    if(btn?.isConnected){btn.disabled=false;btn.textContent='임시저장'}
+  }
+}
 async function submitLargeEssay(){
-  const btn=$('#submitEssay');if(!btn||btn.disabled)return;
+  const btn=$('#submitEssay'),actionKey=`essay:${studentToken}`;
+  if(!btn||btn.disabled||activeWriteOperations.has(actionKey))return;
   if(!confirm('최종 제출하면 다시 수정할 수 없습니다. 제출할까요?'))return;
+  if(activeWriteOperations.has(actionKey))return;
+  activeWriteOperations.add(actionKey);
+  // 자동 임시저장은 최종 제출과 동시에 실행되면 안 된다.
+  clearInterval(draftTimer);draftTimer=null;
   const answers=collectEssayAnswers();
   setSubmitButtonState(btn,'pending');
   const statusEl=$('#essayMsg');if(statusEl){statusEl.className='muted';statusEl.textContent='서버에 답안을 저장하고 있습니다. 잠시 그대로 두세요.'}
   let r;
   try{r=await sb.rpc('lg_submit_final',{p_token:studentToken,p_access_code:largeExamAccessCode,p_answers:answers})}
-  catch(e){setSubmitButtonState(btn,'ready');msg($('#essayMsg'),'네트워크 오류입니다. 제출 상태 확인 후 다시 시도하세요.');return}
+  catch(e){activeWriteOperations.delete(actionKey);setSubmitButtonState(btn,'ready');resumeLargeDraftAutoSave();msg($('#essayMsg'),'네트워크 오류입니다. 제출 상태 확인 후 다시 시도하세요.');return}
   if(r.error||!r.data?.ok){
+    activeWriteOperations.delete(actionKey);
     setSubmitButtonState(btn,'ready');
     if(r.data?.closed){clearInterval(draftTimer);draftTimer=null;renderLargeFinal();return}
+    resumeLargeDraftAutoSave();
     msg($('#essayMsg'),r.data?.message||r.error?.message||'제출되지 않았습니다.');
     return;
   }
@@ -386,7 +434,9 @@ async function submitLargeEssay(){
     if(verified)storedTime=check.data.submitted_at||storedTime;
   }catch(e){}
   if(!verified){
+    activeWriteOperations.delete(actionKey);
     setSubmitButtonState(btn,'ready');
+    resumeLargeDraftAutoSave();
     msg($('#essayMsg'),'제출 요청은 처리됐지만 서버 저장 상태를 재확인하지 못했습니다. 새로고침 후 제출 상태를 확인하세요.');
     return;
   }
@@ -426,7 +476,24 @@ async function renderStudentHomework(){
     const {data}=await sb.rpc('lg_get_student_summary',{p_token:studentToken});$('#homeworkPane').innerHTML=`<div class="card"><h3 class="section-title">기말 과제 제출 확인</h3>${data?.homework_done?'<div class="ok">과제 제출 확인 완료 · 20/20</div>':'<div class="muted">기말고사 당일 실물 과제를 교수님께 제출한 뒤, 교수님 휴대폰의 동적 QR을 바로 촬영하세요.</div>'}<div id="hwmsg" class="muted" style="margin-top:8px"></div></div>`;
   }
 }
-async function submitChineseHomework(week,code,el){const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_check_homework`,{p_token:studentToken,p_week:week,p_code:code});if(error||!data?.ok)msg(el,data?.message||error?.message||'실패');else{msg(el,isChinese(student.course)?'과제가 확인되었습니다. 해당 주차의 QR 대상 회차를 한꺼번에 인정했습니다.':'과제가 확인되었습니다.',true);renderStudentScores();if(isChinese(student.course))renderMyChineseQuizHomework(week)}}
+async function submitChineseHomework(week,code,el){
+  const key=`homework:${studentToken}:${week}`,btn=$('#hwsub');
+  if(activeWriteOperations.has(key))return;
+  activeWriteOperations.add(key);
+  if(btn){btn.disabled=true;btn.textContent='확인 중…'}
+  try{
+    const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_check_homework`,{p_token:studentToken,p_week:week,p_code:code});
+    if(error||!data?.ok)msg(el,data?.message||error?.message||'실패');
+    else{
+      msg(el,'과제가 확인되었습니다. 해당 주차의 QR 대상 회차를 한꺼번에 인정했습니다.',true);
+      renderStudentScores();renderMyChineseQuizHomework(week);
+    }
+  }catch(e){msg(el,e?.message||'서버 연결 오류입니다. 다시 상태를 확인하세요.')}
+  finally{
+    activeWriteOperations.delete(key);
+    if(btn?.isConnected){btn.disabled=false;btn.textContent='과제 확인'}
+  }
+}
 async function renderStudentPledge(){
   const pane=$('#pledgePane');if(!pane||!studentToken)return;
   if(isChinese(student.course)){pane.innerHTML='';return}
@@ -1084,6 +1151,8 @@ async function renderTeacherAttendance(){
     $('#taBody').querySelectorAll('[data-gate-kind]').forEach(btn=>{
       btn.onclick=async()=>{
         const period=Number(btn.dataset.gatePeriod),kind=btn.dataset.gateKind,state=btn.dataset.gateState;
+        const gateKey=`teacher-attendance:${sem.id}:${courseKey}:${w}:${period}:${kind}`;
+        if(activeWriteOperations.has(gateKey)||Date.now()<(recentGateActions.get(gateKey)||0))return;
         let action=state==='open'?'close':'open';
         const label=kind==='start'?'시작 출석':'종료 출석';
 
@@ -1102,30 +1171,48 @@ async function renderTeacherAttendance(){
           if(!confirm(`${period}교시 종료 출석을 시작할까요?\n종료 출석을 열면 시작 출석은 자동으로 마감됩니다.`))return;
         }
 
-        btn.disabled=true;
-        const {data,error}=await sb.rpc('teacher_set_attendance_gate',{
-          p_semester_id:sem.id,p_course_key:courseKey,p_week:w,p_period:period,p_kind:kind,p_action:action
-        });
-        if(error||!data?.ok){
-          msg($('#taMsg'),data?.message||error?.message||'출석 버튼 변경에 실패했습니다.');
-          btn.disabled=false;
-          return;
+        activeWriteOperations.add(gateKey);
+        btn.disabled=true;btn.textContent='처리 중…';
+        try{
+          const {data,error}=await sb.rpc('teacher_set_attendance_gate',{
+            p_semester_id:sem.id,p_course_key:courseKey,p_week:w,p_period:period,p_kind:kind,p_action:action
+          });
+          if(error||!data?.ok)throw new Error(data?.message||error?.message||'출석 버튼 변경에 실패했습니다.');
+          // 화면이 먼저 다시 그려져도 3초 내 재클릭을 무시한다.
+          recentGateActions.set(gateKey,Date.now()+3000);
+          const done=action==='open'?`${period}교시 ${label}을 열었습니다.`:`${period}교시 ${label}을 마감했습니다.`;
+          msg($('#taMsg'),data.already?`${done} (이미 처리된 상태)`:done,true);
+          await load();
+        }catch(e){
+          msg($('#taMsg'),e?.message||'출석 버튼 변경에 실패했습니다.');
+        }finally{
+          activeWriteOperations.delete(gateKey);
+          if(btn.isConnected){btn.disabled=false;btn.textContent=state==='open'?`${label} 마감`:`${label} 열기`;}
         }
-        const done=action==='open'?`${period}교시 ${label}을 열었습니다.`:`${period}교시 ${label}을 마감했습니다.`;
-        msg($('#taMsg'),done,true);
-        load();
       };
     });
 
     $('#finalizeWeek').onclick=async()=>{
+      const finalizeKey=`teacher-week-finalize:${sem.id}:${courseKey}:${w}`;
+      if(activeWriteOperations.has(finalizeKey)||Date.now()<(recentGateActions.get(finalizeKey)||0))return;
       if(!week?.finalized){
         const extra=anyGateOpen?'\n현재 입력 중인 출석 버튼이 있습니다. 주차를 확정하면 학생 입력은 더 이상 인정되지 않습니다.':'';
         if(!confirm(`${w}주차 출석을 확정할까요? 미입력 교시는 결석으로 기록됩니다.${extra}`))return;
       }
-      let r;
-      if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized});
-      else r=await sb.rpc('lg_set_attendance_week_finalized',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized});
-      if(r.error)alert(r.error.message);else load();
+      activeWriteOperations.add(finalizeKey);
+      const button=$('#finalizeWeek');button.disabled=true;button.textContent='처리 중…';
+      try{
+        let r;
+        if(isChinese(teacherCourse))r=await sb.rpc(`${cPrefix(teacherCourse)}_set_attendance_week_finalized`,{p_semester_id:sem.id,p_week:w,p_finalized:!week?.finalized});
+        else r=await sb.rpc('lg_set_attendance_week_finalized',{p_semester_id:sem.id,p_slot:course(teacherCourse).slot,p_week:w,p_finalized:!week?.finalized});
+        if(r.error)throw r.error;
+        recentGateActions.set(finalizeKey,Date.now()+3000);
+        await load();
+      }catch(e){alert(e?.message||'주차 확정 상태를 변경하지 못했습니다.')}
+      finally{
+        activeWriteOperations.delete(finalizeKey);
+        if(button.isConnected){button.disabled=false;button.textContent=week?.finalized?'주차 확정 해제':'이 주차 출석 확정'}
+      }
     };
 
     $('#taBody').querySelectorAll('[data-audit-att]').forEach(btn=>{
