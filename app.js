@@ -243,7 +243,7 @@ async function restoreStudent(key){
   const {data,error}=await sb.rpc(rpc,{p_token:x.token});
   if(!error&&data?.ok&&(!studentQrContext||(Number(data.semester_id)===Number(studentQrContext.semester_id)&&key===studentQrContext.course_key))){student={id:data.id,login_no:data.login_no,student_no:data.student_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
 }
-function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();refreshLive();}
+function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();if(tab==='homework'&&isChinese(student?.course)&&$('#hwweek'))renderMyChineseQuizHomework(Number($('#hwweek').value));refreshLive();}
 async function renderStudentGroup(){
   const box=$('#studentGroupCard');if(!box)return;
   if(!studentToken||isChinese(student.course)){box.classList.add('hidden');box.innerHTML='';return}
@@ -637,12 +637,14 @@ async function submitLargeEssay(){
   renderStudentScores();
 }
 
+let homeworkReadSeq=0;
 async function renderMyChineseQuizHomework(week){
   if(!isChinese(student?.course)||!studentToken)return;
   const box=$('#myQuizHomework');if(!box)return;
+  const token=studentToken,key=student.course,request=++homeworkReadSeq;
   box.innerHTML='<div class="muted">회차별 과제 인정 상태 확인 중…</div>';
-  const {data,error}=await sb.rpc(`${cPrefix(student.course)}_get_my_quiz_homework`,{p_token:studentToken,p_homework_week:Number(week)});
-  if(!$('#myQuizHomework')||Number($('#hwweek')?.value)!==Number(week))return;
+  const {data,error}=await sb.rpc(`${cPrefix(key)}_get_my_quiz_homework`,{p_token:token,p_homework_week:Number(week)});
+  if(request!==homeworkReadSeq||studentToken!==token||student?.course!==key||$('#myQuizHomework')!==box||Number($('#hwweek')?.value)!==Number(week))return;
   if(error){box.innerHTML=`<div class="bad">과제 인정 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;return}
   const rows=data||[];
   if(!rows.length){box.innerHTML='<div class="muted">이 주차에 연결된 회차별 듣기평가 과제가 없습니다. 이전 학기 초반 과제는 종전 주차별 기록을 따릅니다.</div>';return}
@@ -1498,6 +1500,17 @@ async function renderTeacherAttendance(){
   $('#taWeek').onchange=load;load();
 }
 
+function listeningWeekForDate(first,date){
+  if(!first||!date)return null;
+  try{
+    const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(date));
+    const part=t=>parts.find(x=>x.type===t)?.value;
+    const localDate=`${part('year')}-${part('month')}-${part('day')}`;
+    const days=(Date.parse(localDate+'T00:00:00Z')-Date.parse(first+'T00:00:00Z'))/86400000;
+    if(!Number.isFinite(days))return null;
+    return Math.min(15,Math.max(1,1+Math.floor(days/7)));
+  }catch{return null}
+}
 async function renderTeacherQuiz(){
   if(!isChinese(teacherCourse)){currentTeacherTab='midterm';switchTeacherPane('midterm');return renderTeacherMidterm()}
   const pane=$('#tquiz'),sem=selectedSemester(),p=cPrefix(teacherCourse);
@@ -1524,24 +1537,18 @@ async function renderTeacherQuiz(){
   // to decide which following week's homework is automatically recognized.
   function quizDisplayWeek(q){
     if(Number(q.scheduled_week)>=1 && Number(q.scheduled_week)<=15)return Number(q.scheduled_week);
-    const first=courseWeek1Dates[teacherCourse];
-    if(!first||!q.created_at)return 1;
-    try{
-      const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(q.created_at));
-      const part=t=>parts.find(x=>x.type===t)?.value;
-      const localDate=`${part('year')}-${part('month')}-${part('day')}`;
-      const days=(Date.parse(localDate+'T00:00:00Z')-Date.parse(first+'T00:00:00Z'))/86400000;
-      return Math.min(15,Math.max(1,1+Math.floor(days/7)));
-    }catch{return 1}
+    return listeningWeekForDate(courseWeek1Dates[teacherCourse],q.created_at)||1;
   }
   qs=(qs||[]).map(q=>({...q,_display_week:quizDisplayWeek(q)}));
   const maxRound=(qs||[]).reduce((m,q)=>Math.max(m,q.round),0);
   pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 듣기평가</h3><div class="muted">각 시험이 끝날 때마다 해당 차수의 <b>답안 제출 마감</b>을 눌러주세요. 마감 전에는 학생에게 점수·정답이 공개되지 않습니다.</div></div><button id="addQuizBtn" class="primary">제${maxRound+1}차 추가</button></div></div>${(isChinese(teacherCourse)?'<div class="notice"><b>자동 과제 인정용 실시 주차</b>: 시험을 미리 만들어 두더라도 각 회차의 실제 시험 주차를 아래에서 선택하고 [설정 저장]을 눌러주세요. 각 회차의 만점 학생은 <b>다음 번호 주차 과제</b>가 즉시 자동 인정됩니다. 만점 미달 회차는 다음 번호 주차의 QR 한 번으로 일괄 인정합니다. 계절학기도 수업 순서를 주차로 지정합니다.</div>':'')}${(qs||[]).map(q=>quizEditor(q,null,null)).join('')||'<div class="card muted">아직 만든 듣기평가가 없습니다.</div>'}`;
   // 제N차를 중복 클릭해서 같은 차수를 여러 번 추가하지 않도록 대기 상태를 표시한다.
-  // 같은 수업에서 연속 응시하는 회차는 직전 회차의 실시 주차를 기본값으로 사용한다.
+  // 활성 학기의 새 회차는 오늘의 수업 주차를 기본값으로 사용한다.
+  // 비활성 학기 또는 개강일 미설정 시 직전 회차를 참고하고, 교수자가 직접 선택할 수 있다.
   $('#addQuizBtn').onclick=async()=>{
     const btn=$('#addQuizBtn');if(btn.disabled)return;
-    const nextRound=maxRound+1, defaultWeek=(qs||[]).length?Number(qs[qs.length-1]._display_week)||1:1;
+    const previousWeek=(qs||[]).length?Number(qs[qs.length-1]._display_week)||1:1;
+    const nextRound=maxRound+1, defaultWeek=(sem.is_active?listeningWeekForDate(courseWeek1Dates[teacherCourse],new Date()):null)||previousWeek;
     btn.disabled=true;btn.textContent='추가 중…';
     try{
       const row={semester_id:sem.id,round:nextRound,answer_key:['A','A','A','A','A'],is_open:false,is_closed:false,counted:true,scheduled_week:defaultWeek};
