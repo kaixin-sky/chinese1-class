@@ -59,7 +59,7 @@ async function loadPublicInfo(){
 
 
 // 4과목 학생 화면 자동 갱신: 교수자 알림 + 20초 재확인. 답안/성적 데이터는 수정하지 않음.
-let liveChannel=null,liveTimer=null,liveBusy=false,liveQueued=false,liveLast=0;
+let liveChannel=null,liveTimer=null,liveBusy=false,liveQueued=false,liveLast=0,liveRetryTimer=null,liveSocketReady=false;
 let liveAttendanceRefresh=null,liveQuizSignature=null,liveFinalSignature=null;
 function liveTopic(sem,key){return 'class-live:v1:'+Number(sem)+':'+String(key)}
 function liveTab(){return $('#stabs button.active')?.dataset.tab||'attendance'}
@@ -90,7 +90,11 @@ async function refreshLive(){
   if(liveBusy){liveQueued=true;return}
   const tab=liveTab();
   if(!['attendance','quiz','final'].includes(tab)||tab==='quiz'&&!isChinese(student.course))return;
-  if(Date.now()-liveLast<850)return;
+  const cooldown=Date.now()-liveLast;
+  if(cooldown<850){
+    if(!liveRetryTimer)liveRetryTimer=setTimeout(()=>{liveRetryTimer=null;refreshLive()},900-cooldown);
+    return;
+  }
   liveLast=Date.now();liveBusy=true;
   const token=studentToken,key=student.course,sem=student.semester_id;
   const valid=()=>liveReady()&&studentToken===token&&student?.course===key&&
@@ -104,7 +108,7 @@ async function refreshLive(){
         const editing=$('#quizPane [data-submit-exam]');
         if(editing){
           // 현재 답안지를 다시 생성하지 않는다. 마감은 기존 버튼에만 반영.
-          for(const btn of $('#quizPane [data-submit-exam]')){
+          for(const btn of $$('#quizPane [data-submit-exam]')){
             const qid=Number(btn.closest('[id^="qarea"]')?.id.replace('qarea',''));
             if(!Number.isFinite(qid))continue;
             const active=(data||[]).find(q=>Number(q.id)===qid&&!q.closed&&!q.submitted);
@@ -144,6 +148,8 @@ async function refreshLive(){
 }
 function stopLive(){
   if(liveTimer){clearInterval(liveTimer);liveTimer=null}
+  if(liveRetryTimer){clearTimeout(liveRetryTimer);liveRetryTimer=null}
+  liveSocketReady=false;
   if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
   liveAttendanceRefresh=null;liveQuizSignature=null;liveFinalSignature=null;liveLast=0;liveQueued=false;
 }
@@ -153,26 +159,32 @@ function startLive(){
   if(!sb||!student||!studentToken||$('#studentSection')?.classList.contains('hidden'))return;
   const token=studentToken,key=student.course,sem=student.semester_id;
   try{liveChannel=sb.channel(liveTopic(sem,key))
-    .on('broadcast',{event:'status'},()=>{if(studentToken===token&&student?.course===key&&Number(student?.semester_id)===Number(sem))refreshLive()})
-    .subscribe()}catch(e){console.warn('실시간 알림 연결 불가 (주기적 자동 확인 사용):',e)}
+    .on('broadcast',{event:'status'},()=>{
+      if(studentToken===token&&student?.course===key&&Number(student?.semester_id)===Number(sem))refreshLive();
+    })
+    .subscribe((status,error)=>{
+      if(studentToken!==token||student?.course!==key||Number(student?.semester_id)!==Number(sem))return;
+      liveSocketReady=status==='SUBSCRIBED';
+      if(liveSocketReady)refreshLive();
+      else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')
+        console.warn('수업 알림 연결 재시도 중:',status,error?.message||'');
+    })}catch(e){liveSocketReady=false;console.warn('실시간 알림 연결 불가 (주기적 자동 확인 사용):',e)}
   liveTimer=setInterval(()=>refreshLive(),20000);
 }
 function publishLive(sem,key,kind){
   if(!sb||!sem||!COURSES[key])return;
-  let channel=null,closed=false,timeout=null;
-  const done=()=>{if(closed)return;closed=true;if(timeout)clearTimeout(timeout);
-    if(channel)try{sb.removeChannel(channel)}catch(e){}};
+  // DB 트리거에서 직접 알림을 보내며 이것은 보조 알림이다. 구독 대기 없이 HTTP로 바로 전송.
+  let channel=null;
   try{
-    channel=sb.channel(liveTopic(sem,key));timeout=setTimeout(done,5000);
-    channel.subscribe(async status=>{
-      if(closed)return;
-      if(status==='SUBSCRIBED'){
-        try{await channel.send({type:'broadcast',event:'status',payload:{kind}})}
-        catch(e){console.warn('실시간 알림 전송 실패 (주기적 확인 유지):',e)}
-        finally{setTimeout(done,300)}
-      }else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')done();
-    });
-  }catch(e){done();console.warn('실시간 알림 생성 실패:',e)}
+    channel=sb.channel(liveTopic(sem,key));
+    Promise.resolve(channel.send({type:'broadcast',event:'status',payload:{kind}}))
+      .then(result=>{if(result!=='ok')console.warn('보조 알림 상태:',result)})
+      .catch(e=>console.warn('보조 알림 전송 실패:',e))
+      .finally(()=>{if(channel)try{sb.removeChannel(channel)}catch(e){}});
+  }catch(e){
+    if(channel)try{sb.removeChannel(channel)}catch(err){}
+    console.warn('보조 알림 준비 실패:',e);
+  }
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshLive()});
 window.addEventListener('focus',()=>refreshLive());
