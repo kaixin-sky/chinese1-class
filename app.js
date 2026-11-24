@@ -31,7 +31,7 @@ const selectedSemester=()=>semesters.find(x=>Number(x.id)===Number(teacherSemest
 const weekOpts=(selected=1)=>Array.from({length:15},(_,i)=>`<option value="${i+1}" ${i+1===Number(selected)?'selected':''}>${i+1}주차</option>`).join('');
 function msg(el,t,ok=false){if(!el)return;el.textContent=t;el.className=ok?'ok':'bad'}
 function clearMsg(el){if(el){el.textContent='';el.className='muted'}}
-function setMode(m){if(m==='t')stopLive();$('#studentSection').classList.toggle('hidden',m!=='s');$('#teacherSection').classList.toggle('hidden',m!=='t');$('#studentMode').classList.toggle('active',m==='s');$('#teacherMode').classList.toggle('active',m==='t');if(m==='t')tryRestoreTeacher();else if(student&&studentToken&&!liveTimer)startLive()}
+function setMode(m){if(m==='t')stopLive(true);$('#studentSection').classList.toggle('hidden',m!=='s');$('#teacherSection').classList.toggle('hidden',m!=='t');$('#studentMode').classList.toggle('active',m==='s');$('#teacherMode').classList.toggle('active',m==='t');if(m==='t')tryRestoreTeacher();else if(student&&studentToken&&!liveTimer)startLive()}
 $('#studentMode').onclick=()=>setMode('s');$('#teacherMode').onclick=()=>setMode('t');
 function baseUrl(){return new URL(location.origin+location.pathname)}
 const STUDENT_SITE_URL='https://kaixin-sky.github.io/chinese1-class/';
@@ -58,10 +58,11 @@ async function loadPublicInfo(){
 }
 
 
-// 4과목 학생 화면 자동 갱신: 교수자 알림 + 20초 재확인. 답안/성적 데이터는 수정하지 않음.
+// 4과목 학생 화면 자동 갱신: 서버 푸시 + 연결 복구 + 활성 화면 재확인. 답안/성적 데이터는 수정하지 않음.
 let liveChannel=null,liveTimer=null,liveBusy=false,liveQueued=false,liveLast=0,liveRetryTimer=null,liveSocketReady=false;
 let liveAttendanceRefresh=null,liveQuizSignature=null,liveFinalSignature=null;
-function liveTopic(sem,key){return 'class-live:v1:'+Number(sem)+':'+String(key)}
+function liveCourseKey(key){return key==='small1'?'chinese1':key==='small2'?'chinese2':key}
+function liveTopic(sem,key){return 'class-live:v1:'+Number(sem)+':'+String(liveCourseKey(key))}
 function liveTab(){return $('#stabs button.active')?.dataset.tab||'attendance'}
 function liveReady(){return !!sb&&!!student&&!!studentToken&&!document.hidden&&
   navigator.onLine!==false&&!$('#studentSection')?.classList.contains('hidden')&&
@@ -146,15 +147,17 @@ async function refreshLive(){
     if(liveQueued){liveQueued=false;setTimeout(()=>{if(liveReady())refreshLive()},900)}
   }
 }
-function stopLive(){
+function stopLive(keepAttendance=false){
   if(liveTimer){clearInterval(liveTimer);liveTimer=null}
   if(liveRetryTimer){clearTimeout(liveRetryTimer);liveRetryTimer=null}
   liveSocketReady=false;
   if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
-  liveAttendanceRefresh=null;liveQuizSignature=null;liveFinalSignature=null;liveLast=0;liveQueued=false;
+  if(!keepAttendance)liveAttendanceRefresh=null;
+  liveQuizSignature=null;liveFinalSignature=null;liveLast=0;liveQueued=false;
 }
 function startLive(){
-  if(liveTimer)clearInterval(liveTimer);
+  if(liveTimer){clearInterval(liveTimer);liveTimer=null}
+  liveSocketReady=false;
   if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
   if(!sb||!student||!studentToken||$('#studentSection')?.classList.contains('hidden'))return;
   const token=studentToken,key=student.course,sem=student.semester_id;
@@ -169,9 +172,17 @@ function startLive(){
       else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')
         console.warn('수업 알림 연결 재시도 중:',status,error?.message||'');
     })}catch(e){liveSocketReady=false;console.warn('실시간 알림 연결 불가 (주기적 자동 확인 사용):',e)}
-  liveTimer=setInterval(()=>refreshLive(),20000);
+  // 정상 연결이면 서버 푸시가 우선. 숨겨진 탭에는 요청하지 않는다.
+  // 연결 실패/화면 복귀 시 2.5초, 정상 연결에서도 출석 5초 / 시험 10초마다 검증.
+  liveTimer=setInterval(()=>{
+    if(!liveReady())return;
+    const maxAge=liveSocketReady?(liveTab()==='attendance'?5000:10000):2500;
+    if(Date.now()-liveLast>=maxAge-100)refreshLive();
+  },2500);
+  refreshLive();
 }
 function publishLive(sem,key,kind){
+  key=liveCourseKey(key);
   if(!sb||!sem||!COURSES[key])return;
   // DB 트리거에서 직접 알림을 보내며 이것은 보조 알림이다. 구독 대기 없이 HTTP로 바로 전송.
   let channel=null;
@@ -186,9 +197,23 @@ function publishLive(sem,key,kind){
     console.warn('보조 알림 준비 실패:',e);
   }
 }
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshLive()});
-window.addEventListener('focus',()=>refreshLive());
-window.addEventListener('online',()=>refreshLive());
+let liveSuspended=false;
+function resumeLive(){
+  if(!liveReady())return;
+  const reconnect=liveSuspended||!liveChannel||!liveSocketReady;
+  liveSuspended=false;
+  if(reconnect)startLive();
+  else refreshLive();
+}
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden)liveSuspended=true;
+  else resumeLive();
+});
+window.addEventListener('pagehide',()=>{liveSuspended=true});
+window.addEventListener('pageshow',()=>resumeLive());
+window.addEventListener('focus',()=>resumeLive());
+window.addEventListener('offline',()=>{liveSuspended=true;liveSocketReady=false});
+window.addEventListener('online',()=>resumeLive());
 // 학생 화면 자동 갱신 끝
 
 // ---------------- 학생 ----------------
@@ -249,6 +274,7 @@ async function renderStudentAttendance(){
   let weekData=[];
   let lastSuccess=null;
   let attendanceSubmitting=false;
+  let attendanceRequestSeq=0;
 
   const badge=(label,state,ok,auto=false)=>{
     // 주차 확정 후에도 이미 확인된 출석은 반드시 '출석 완료'로 표시한다.
@@ -325,9 +351,8 @@ async function renderStudentAttendance(){
     }else if(hasOpen){
       hint.innerHTML=`<b style="color:#2563eb">${open.join('·')} 출석 입력 가능</b> · 단어를 입력한 다음 반드시 출석 확인 버튼을 누르세요.`;
       word.placeholder=`현재 ${open.join('·')} 출석 단어 입력`;
-      if(lastSuccess&&lastSuccess.week===w&&lastSuccess.period===p){
-        setButton(`✓ ${lastSuccess.kind==='start'?'시작':'종료'} 확인 완료`,'#16a34a',true);
-      }else setButton('출석 확인','#2563eb',false);
+      // 서버에 아직 필요한 시작/종료 출석이 열려 있으면 이전 성공 기록 때문에 새 인증을 막지 않는다.
+      setButton('출석 확인','#2563eb',false);
     }else if(hasClosed){
       hint.innerHTML='<b style="color:#dc2626">출석 입력이 마감되었습니다. 이미 완료된 확인 기록은 유지됩니다.</b>';
       word.placeholder='출석 입력 마감';
@@ -340,20 +365,25 @@ async function renderStudentAttendance(){
   };
 
   const refresh=async(clear=true)=>{
-    applyMode(clear);
-    const rpc=isChinese(student.course)?`${cPrefix(student.course)}_get_attendance_week_v2`:'lg_get_attendance_week_v2';
-    const {data,error}=await sb.rpc(rpc,{p_token:studentToken,p_week:Number($('#aw').value)});
-    if(error){
-      $('#attweekstatus').innerHTML=`<div class="bad">현재 출석 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;
-      return;
-    }
-    weekData=data||[];
-    drawWeekStatus();
-    updateSelectedHint();
+    const weekEl=$('#aw');
+    if(!weekEl||!studentToken||!student)return;
+    if(clear)applyMode(true);
+    const request=++attendanceRequestSeq,token=studentToken,key=student.course,week=Number(weekEl.value);
+    const current=()=>request===attendanceRequestSeq&&studentToken===token&&student?.course===key&&$('#aw')===weekEl&&Number(weekEl.value)===week;
+    const rpc=isChinese(key)?`${cPrefix(key)}_get_attendance_week_v2`:'lg_get_attendance_week_v2';
+    try{
+      const {data,error}=await sb.rpc(rpc,{p_token:token,p_week:week});
+      if(!current())return;
+      if(error){if(clear)$('#attweekstatus').innerHTML=`<div class="bad">현재 출석 상태를 불러오지 못했습니다: ${esc(error.message)}</div>`;return;}
+      weekData=data||[];
+      if(attendanceSubmitting)return; // 제출 도중에는 입력란을 건드리지 않음
+      drawWeekStatus();
+      updateSelectedHint();
+    }catch(e){if(current()&&clear)$('#attweekstatus').textContent='출석 상태 확인 중입니다. 연결되면 다시 확인합니다.';}
   };
 
-  $('#aw').onchange=()=>{lastSuccess=null;refresh(true)};
-  $('#ap').onchange=()=>{lastSuccess=null;updateSelectedHint()};
+  $('#aw').onchange=()=>{lastSuccess=null;weekData=[];updateSelectedHint();refresh(true)};
+  $('#ap').onchange=()=>{lastSuccess=null;updateSelectedHint();refresh(false)};
   $('#attword').onfocus=()=>refresh(false);
   $('#attword').oninput=()=>{if(lastSuccess){lastSuccess=null;updateSelectedHint()}};
 
@@ -391,6 +421,7 @@ async function renderStudentAttendance(){
       weekEl.disabled=false;periodEl.disabled=false;wordEl.disabled=false;
       applyMode(false);
       if(!lastSuccess)btn.textContent=oldText==='확인 중…'?'출석 확인':oldText;
+      drawWeekStatus();
       updateSelectedHint();
     }
   };
