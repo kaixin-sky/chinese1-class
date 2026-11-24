@@ -1646,7 +1646,7 @@ async function renderTeacherHomework(){if(isChinese(teacherCourse))return render
 async function renderTeacherChineseHomework(){
   const pane=$('#thomework'),sem=selectedSemester(),key=teacherCourse;
   if(!sem)return;
-  pane.innerHTML=`<div class="card"><div class="row"><h3 class="section-title">${esc(courseLabel(key))} 차수별 과제물 검사</h3><button id="roundHwRefresh">현황 새로고침</button></div><div class="notice">마감된 각 듣기평가의 만점자는 자동 제출 완료됩니다. 나머지 학생은 실물 과제 검사 후 해당 차수 QR을 촬영합니다. QR은 30분간 유효하며 다른 차수 QR을 열거나 종료하면 기존 QR은 사용할 수 없습니다.</div><div id="roundHwRows" style="margin-top:10px">현황 확인 중…</div><div id="roundHwQR" style="margin-top:12px"></div><div id="roundHwMsg" class="muted"></div></div>`;
+  pane.innerHTML=`<div class="card"><div class="row"><h3 class="section-title">${esc(courseLabel(key))} 차수별 과제물 검사</h3><button id="roundHwRefresh">현황 새로고침</button></div><div class="notice">마감된 각 듣기평가의 만점자는 자동 제출 완료됩니다. 나머지 학생은 실물 과제 검사 후 해당 차수 QR을 촬영합니다. QR 검사에는 시간 제한이 없으며 다른 차수와 독립적으로 운영됩니다. 검사 종료 후에도 해당 차수의 QR 검사 시작을 누르면 같은 QR을 다시 사용할 수 있습니다.</div><div id="roundHwRows" style="margin-top:10px">현황 확인 중…</div><div id="roundHwQR" style="margin-top:12px"></div><div id="roundHwMsg" class="muted"></div></div>`;
   const box=$('#roundHwRows'),qrBox=$('#roundHwQR'),message=$('#roundHwMsg');
   let activeQuiz=null,busy=false,request=0;
   const valid=()=>$('#roundHwRows')===box&&teacherCourse===key&&Number(selectedSemester()?.id)===Number(sem.id)&&currentTeacherTab==='homework';
@@ -1656,7 +1656,7 @@ async function renderTeacherChineseHomework(){
     if(!valid()||seq!==request)return;
     if(error||!data?.ok){msg(message,error?.message||data?.message||'현황 확인 실패');return}
     const rows=data.rows||[];
-    box.innerHTML=rows.length?rows.map(r=>`<div class="q"><div class="row"><div><b>제${r.round}차 과제물</b><div class="muted">자동 ${r.auto_count}명 · QR/기존 인정 ${r.qr_count}명 · 미제출 ${r.pending_count}명 / 전체 ${r.total_students}명</div></div><button class="primary" data-round-qr="${r.quiz_id}" data-round-no="${r.round}">${activeQuiz===Number(r.quiz_id)?'QR 다시 생성':'QR 검사 시작'}</button></div></div>`).join(''):'<div class="muted">마감된 성적 반영 듣기평가가 없습니다.</div>';
+    box.innerHTML=rows.length?rows.map(r=>`<div class="q"><div class="row"><div><b>제${r.round}차 과제물</b><div class="muted">자동 ${r.auto_count}명 · QR/기존 인정 ${r.qr_count}명 · 미제출 ${r.pending_count}명 / 전체 ${r.total_students}명 · ${r.qr_open?'검사 중':'검사 대기'}</div></div><button class="primary" data-round-qr="${r.quiz_id}" data-round-no="${r.round}">${r.qr_open?'QR 다시 보기':'QR 검사 시작'}</button></div></div>`).join(''):'<div class="muted">마감된 성적 반영 듣기평가가 없습니다.</div>';
     box.querySelectorAll('[data-round-qr]').forEach(btn=>btn.onclick=()=>openQR(Number(btn.dataset.roundQr),Number(btn.dataset.roundNo),btn));
   }
   async function openQR(id,round,btn){
@@ -1668,15 +1668,20 @@ async function renderTeacherChineseHomework(){
       if(!valid())return;
       if(error||!data?.ok||!data.token)throw Error(error?.message||data?.message||'QR 생성 실패');
       activeQuiz=id;url.searchParams.set('hwround',String(id));url.searchParams.set('roundqr',data.token);
-      qrBox.innerHTML=`<div class="q"><div class="row"><b>제${round}차 과제물 검사 QR</b><button id="stopRoundHw" class="danger">QR 종료</button></div><div id="roundHwImg" class="qrbox" style="margin-top:8px"></div><div class="muted">유효 시간 30분 · 해당 차수만 인정</div></div>`;
+      qrBox.innerHTML=`<div class="q"><div class="row"><b>제${round}차 과제물 검사 QR</b><button id="stopRoundHw" class="danger">QR 검사 종료</button></div><div id="roundHwImg" class="qrbox" style="margin-top:8px"></div><div class="muted">시간 제한 없음 · 해당 차수만 인정 · 종료 후 재사용 가능</div></div>`;
       new QRCode($('#roundHwImg'),{text:url.href,width:260,height:260});
       $('#stopRoundHw').onclick=async()=>{
-        const {data:r,error:e}=await sb.rpc('sm_round_homework_gate',{p_course:key,p_semester_id:sem.id,p_quiz_id:id,p_open:false});
-        if(!valid())return;
-        if(e||!r?.ok){msg(message,e?.message||r?.message||'QR 종료 실패');return}
-        activeQuiz=null;qrBox.innerHTML='';msg(message,`제${round}차 QR을 종료했습니다.`,true);await load();
+        if(busy||!valid())return;busy=true;
+        const stop=$('#stopRoundHw');stop.disabled=true;
+        try{
+          const {data:r,error:e}=await sb.rpc('sm_round_homework_gate',{p_course:key,p_semester_id:sem.id,p_quiz_id:id,p_open:false});
+          if(!valid())return;
+          if(e||!r?.ok){msg(message,e?.message||r?.message||'QR 종료 실패');return}
+          activeQuiz=null;qrBox.innerHTML='';msg(message,`제${round}차 QR 검사를 종료했습니다. 검사 시작을 누르면 다시 사용할 수 있습니다.`,true);await load();
+        }catch(e){if(valid())msg(message,e?.message||'QR 종료 실패')}
+        finally{busy=false;if(stop.isConnected)stop.disabled=false}
       };
-      msg(message,`제${round}차 과제물 검사 QR을 공개했습니다.`,true);await load();
+      msg(message,`제${round}차 과제물 검사 QR을 열었습니다.`,true);await load();
     }catch(e){if(valid())msg(message,e?.message||'QR 생성 실패')}
     finally{busy=false;if(btn.isConnected)btn.disabled=false}
   }
