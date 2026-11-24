@@ -31,7 +31,7 @@ const selectedSemester=()=>semesters.find(x=>Number(x.id)===Number(teacherSemest
 const weekOpts=(selected=1)=>Array.from({length:15},(_,i)=>`<option value="${i+1}" ${i+1===Number(selected)?'selected':''}>${i+1}주차</option>`).join('');
 function msg(el,t,ok=false){if(!el)return;el.textContent=t;el.className=ok?'ok':'bad'}
 function clearMsg(el){if(el){el.textContent='';el.className='muted'}}
-function setMode(m){$('#studentSection').classList.toggle('hidden',m!=='s');$('#teacherSection').classList.toggle('hidden',m!=='t');$('#studentMode').classList.toggle('active',m==='s');$('#teacherMode').classList.toggle('active',m==='t');if(m==='t')tryRestoreTeacher()}
+function setMode(m){if(m==='t')stopLive();$('#studentSection').classList.toggle('hidden',m!=='s');$('#teacherSection').classList.toggle('hidden',m!=='t');$('#studentMode').classList.toggle('active',m==='s');$('#teacherMode').classList.toggle('active',m==='t');if(m==='t')tryRestoreTeacher();else if(student&&studentToken&&!liveTimer)startLive()}
 $('#studentMode').onclick=()=>setMode('s');$('#teacherMode').onclick=()=>setMode('t');
 function baseUrl(){return new URL(location.origin+location.pathname)}
 const STUDENT_SITE_URL='https://kaixin-sky.github.io/chinese1-class/';
@@ -57,10 +57,132 @@ async function loadPublicInfo(){
   $('#publicSemesterLabel').textContent=sem?.ok?`${sem.name} · 4과목 통합관리`:'활성 학기가 없습니다.';
 }
 
+
+// 4과목 학생 화면 자동 갱신: 교수자 알림 + 20초 재확인. 답안/성적 데이터는 수정하지 않음.
+let liveChannel=null,liveTimer=null,liveBusy=false,liveQueued=false,liveLast=0;
+let liveAttendanceRefresh=null,liveQuizSignature=null,liveFinalSignature=null;
+function liveTopic(sem,key){return 'class-live:v1:'+Number(sem)+':'+String(key)}
+function liveTab(){return $('#stabs button.active')?.dataset.tab||'attendance'}
+function liveReady(){return !!sb&&!!student&&!!studentToken&&!document.hidden&&
+  navigator.onLine!==false&&!$('#studentSection')?.classList.contains('hidden')&&
+  !$('#studentApp')?.classList.contains('hidden')}
+function liveSignature(kind,data){
+  if(kind==='quiz')return JSON.stringify((data||[]).map(q=>[
+    q.id,q.round,q.total,!!q.submitted,!!q.closed,!!q.manual_grade,q.score,q.submitted_at]));
+  const x=data||{};
+  return JSON.stringify([!!x.open,!!x.closed,!!x.submitted,x.submitted_at,
+    !!x.results_published,x.final_score,!!x.needs_code]);
+}
+function liveNotice(paneId){
+  const pane=$(paneId);if(!pane)return;
+  let n=pane.querySelector('[data-live-notice]');
+  if(!n){n=document.createElement('div');n.setAttribute('data-live-notice','');
+    n.className='notice';n.style.marginBottom='10px';pane.prepend(n)}
+  n.textContent='교수자가 시험 상태를 변경했습니다. 작성 중인 답안을 지우지 않도록 화면을 유지합니다.';
+}
+function liveMarkClosed(button){
+  if(!button||button.textContent==='완료'||button.textContent==='제출 중…')return;
+  button.disabled=true;button.textContent='제출 마감';
+  button.style.background='#dc2626';button.style.borderColor='#dc2626';button.style.color='#fff';
+}
+async function refreshLive(){
+  if(!liveReady())return;
+  if(liveBusy){liveQueued=true;return}
+  const tab=liveTab();
+  if(!['attendance','quiz','final'].includes(tab)||tab==='quiz'&&!isChinese(student.course))return;
+  if(Date.now()-liveLast<850)return;
+  liveLast=Date.now();liveBusy=true;
+  const token=studentToken,key=student.course,sem=student.semester_id;
+  const valid=()=>liveReady()&&studentToken===token&&student?.course===key&&
+    Number(student?.semester_id)===Number(sem)&&liveTab()===tab;
+  try{
+    if(tab==='attendance'){
+      if(liveAttendanceRefresh)await liveAttendanceRefresh();
+    }else if(tab==='quiz'){
+      const {data,error}=await sb.rpc(cPrefix(key)+'_list_open_quizzes',{p_token:token});
+      if(!error&&valid()&&liveSignature('quiz',data)!==liveQuizSignature){
+        const editing=$('#quizPane [data-submit-exam]');
+        if(editing){
+          // 현재 답안지를 다시 생성하지 않는다. 마감은 기존 버튼에만 반영.
+          for(const btn of $('#quizPane [data-submit-exam]')){
+            const qid=Number(btn.closest('[id^="qarea"]')?.id.replace('qarea',''));
+            if(!Number.isFinite(qid))continue;
+            const active=(data||[]).find(q=>Number(q.id)===qid&&!q.closed&&!q.submitted);
+            if(!active)liveMarkClosed(btn);
+            else if(btn.textContent==='제출 마감')setSubmitButtonState(btn,'ready');
+          }
+          liveNotice('#quizPane');
+        }else await renderChineseQuiz(data||[]);
+      }
+    }else{
+      const rpc=isChinese(key)?cPrefix(key)+'_get_final_status':'lg_get_final_status';
+      const {data,error}=await sb.rpc(rpc,{p_token:token});
+      if(!error&&data?.ok&&valid()&&liveSignature('final',data)!==liveFinalSignature){
+        const editing=$('#finalPane [data-submit-exam], #finalPane [data-essay-id]');
+        const access=$('#examAccessCode');
+        if(editing||(access&&(access.value.trim()||document.activeElement===access))){
+          if(data.closed){
+            liveMarkClosed($('#finalPane [data-submit-exam], #submitEssay'));
+            const save=$('#saveDraft');if(save)save.disabled=true;
+            if($('#finalPane [data-essay-id]')){clearInterval(draftTimer);draftTimer=null}
+          }else{
+            const btn=$('#finalPane [data-submit-exam], #submitEssay');
+            if(btn?.textContent==='제출 마감')setSubmitButtonState(btn,'ready');
+            const save=$('#saveDraft');if(save?.disabled)save.disabled=false;
+            if($('#finalPane [data-essay-id]'))resumeLargeDraftAutoSave();
+          }
+          liveNotice('#finalPane');
+        }else if(isChinese(key))await renderChineseFinal(data);
+        else await renderLargeFinal(data);
+      }
+    }
+  }catch(e){console.warn('학생 화면 자동 갱신 실패 (재시도 예정):',e)}
+  finally{
+    liveBusy=false;
+    if(liveQueued){liveQueued=false;setTimeout(()=>{if(liveReady())refreshLive()},900)}
+  }
+}
+function stopLive(){
+  if(liveTimer){clearInterval(liveTimer);liveTimer=null}
+  if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
+  liveAttendanceRefresh=null;liveQuizSignature=null;liveFinalSignature=null;liveLast=0;liveQueued=false;
+}
+function startLive(){
+  if(liveTimer)clearInterval(liveTimer);
+  if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
+  if(!sb||!student||!studentToken||$('#studentSection')?.classList.contains('hidden'))return;
+  const token=studentToken,key=student.course,sem=student.semester_id;
+  try{liveChannel=sb.channel(liveTopic(sem,key))
+    .on('broadcast',{event:'status'},()=>{if(studentToken===token&&student?.course===key&&Number(student?.semester_id)===Number(sem))refreshLive()})
+    .subscribe()}catch(e){console.warn('실시간 알림 연결 불가 (주기적 자동 확인 사용):',e)}
+  liveTimer=setInterval(()=>refreshLive(),20000);
+}
+function publishLive(sem,key,kind){
+  if(!sb||!sem||!COURSES[key])return;
+  let channel=null,closed=false,timeout=null;
+  const done=()=>{if(closed)return;closed=true;if(timeout)clearTimeout(timeout);
+    if(channel)try{sb.removeChannel(channel)}catch(e){}};
+  try{
+    channel=sb.channel(liveTopic(sem,key));timeout=setTimeout(done,5000);
+    channel.subscribe(async status=>{
+      if(closed)return;
+      if(status==='SUBSCRIBED'){
+        try{await channel.send({type:'broadcast',event:'status',payload:{kind}})}
+        catch(e){console.warn('실시간 알림 전송 실패 (주기적 확인 유지):',e)}
+        finally{setTimeout(done,300)}
+      }else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')done();
+    });
+  }catch(e){done();console.warn('실시간 알림 생성 실패:',e)}
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshLive()});
+window.addEventListener('focus',()=>refreshLive());
+window.addEventListener('online',()=>refreshLive());
+// 학생 화면 자동 갱신 끝
+
 // ---------------- 학생 ----------------
 function studentStoreKey(key){return studentQrContext?`class_student_qr_v1_${studentQrContext.semester_id}_${key}`:`class_student_v4_${key}`}
 function saveStudentSession(){if(student&&studentToken)localStorage.setItem(studentStoreKey(student.course),JSON.stringify({student,token:studentToken}))}
-function clearStudentSession(key=student?.course||selectedStudentCourse){localStorage.removeItem(studentStoreKey(key));if(key==='chinese1')localStorage.removeItem('c1_student_v2');student=null;studentToken=null}
+function clearStudentSession(key=student?.course||selectedStudentCourse){stopLive();localStorage.removeItem(studentStoreKey(key));if(key==='chinese1')localStorage.removeItem('c1_student_v2');student=null;studentToken=null}
 async function restoreStudent(key){
   if(!sb||!COURSES[key])return;
   let x=null;try{x=JSON.parse(localStorage.getItem(studentStoreKey(key))||'null')}catch{}
@@ -70,7 +192,7 @@ async function restoreStudent(key){
   const {data,error}=await sb.rpc(rpc,{p_token:x.token});
   if(!error&&data?.ok&&(!studentQrContext||(Number(data.semester_id)===Number(studentQrContext.semester_id)&&key===studentQrContext.course_key))){student={id:data.id,login_no:data.login_no,student_no:data.student_no,name:data.name,semester_id:data.semester_id,semester_name:data.semester_name,course:key,course_name:data.course_name||courseLabel(key)};studentToken=x.token;saveStudentSession();openStudentApp()}else clearStudentSession(key);
 }
-function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();}
+function switchStudentTab(tab){$$('#stabs button').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));$$('.spane').forEach(x=>x.classList.add('hidden'));const p=$('#'+tab+'Pane');if(p)p.classList.remove('hidden');if(tab==='scores')renderStudentScores();if(tab==='pledge')renderStudentPledge();refreshLive();}
 async function renderStudentGroup(){
   const box=$('#studentGroupCard');if(!box)return;
   if(!studentToken||isChinese(student.course)){box.classList.add('hidden');box.innerHTML='';return}
@@ -82,6 +204,7 @@ async function renderStudentGroup(){
   $('#saveMyGroup').onclick=async()=>{const v=$('#myGroupNo').value.trim();const n=Number(v);if(!Number.isInteger(n)||n<1||n>99){msg($('#groupMsg'),'조 번호는 1~99 사이의 숫자로 입력하세요.');return}const {data:r,error:e}=await sb.rpc('lg_set_my_group',{p_token:studentToken,p_group_no:n});if(e||!r?.ok){msg($('#groupMsg'),r?.message||e?.message||'저장 실패');return}msg($('#groupMsg'),`${n}조로 저장했습니다.`,true)};
 }
 function openStudentApp(){
+  stopLive();
   $('#loginCard').classList.add('hidden');$('#studentApp').classList.remove('hidden');
   $('#who').textContent=`학번 ${student.student_no||'-'} · ${student.name} · ${student.course_name||courseLabel(student.course)} · ${student.semester_name}`;
   $('#sQuizTab').classList.toggle('hidden',!isChinese(student.course));
@@ -91,6 +214,7 @@ function openStudentApp(){
   if(isChinese(student.course))renderChineseQuiz(); else $('#quizPane').innerHTML='';
   renderStudentFinal();renderStudentHomework();if(!isChinese(student.course))renderStudentPledge();renderStudentScores();
   processPendingLinks();
+  startLive();
 }
 $('#loginBtn').onclick=async()=>{
   if(!sb||invalidStudentQr)return;clearMsg($('#loginMsg'));
@@ -258,6 +382,7 @@ async function renderStudentAttendance(){
       updateSelectedHint();
     }
   };
+  liveAttendanceRefresh=()=>refresh(false);
   refresh(true);
 }
 
@@ -282,10 +407,11 @@ async function verifyChineseExamSubmission(p,isFinal,qid){
 function questionUI(n,prefix){return Array.from({length:n},(_,i)=>`<div class="q"><b>${i+1}번</b><div class="choices">${['A','B','C','D'].map(c=>`<label class="choice"><input type="radio" name="${prefix}${i}" value="${c}">${c}</label>`).join('')}</div></div>`).join('')}
 function collectAnswers(n,prefix){const a=[];for(let i=0;i<n;i++){const c=document.querySelector(`input[name="${prefix}${i}"]:checked`);if(!c)return null;a.push(c.value)}return a}
 function mcResult(r,ans){return `<div class="score">${r.score}/${r.total}점</div>${ans.map((a,i)=>`<div>${i+1}번: 선택 ${esc(a)} ${a===r.correct[i]?'✅':`❌ → 정답 <b>${esc(r.correct[i])}</b>`}</div>`).join('')}`}
-async function renderChineseQuiz(){
+async function renderChineseQuiz(preloaded=null){
   if(!studentToken||!isChinese(student.course))return;
-  const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_list_open_quizzes`,{p_token:studentToken});
+  const p=cPrefix(student.course),{data,error}=preloaded!==null?{data:preloaded,error:null}:await sb.rpc(`${p}_list_open_quizzes`,{p_token:studentToken});
   if(error){$('#quizPane').innerHTML=`<div class="card bad">${esc(error.message)}</div>`;return}
+  liveQuizSignature=liveSignature('quiz',data);
   $('#quizPane').innerHTML=`<div class="card"><h3 class="section-title">듣기평가</h3>${(data||[]).length?(data||[]).map(q=>{
     const time=q.submitted_at?fmtDT(q.submitted_at):'';
     const state=q.submitted?(q.manual_grade?`<span class="ok">교수자 수동 인정 · ${q.score}/${q.total}점</span><button data-qresult="${q.id}">인정 점수 보기</button>`:(q.closed?`${completedSubmitButton()}<span class="ok">${q.score}/${q.total}점</span><button data-qresult="${q.id}">정답·오답 보기</button>`:`${completedSubmitButton()}<span class="muted">서버 저장 확인${time?` · ${time}`:''}</span><span class="badge">교수자 마감 후 결과 공개</span>`)):`<button data-q="${q.id}" data-total="${q.total}" class="primary">응시</button>`;
@@ -350,9 +476,10 @@ async function showChineseQuizResult(qid){
 }
 
 async function renderStudentFinal(){if(!studentToken)return;if(isChinese(student.course))return renderChineseFinal();return renderLargeFinal();}
-async function renderChineseFinal(){
-  const p=cPrefix(student.course),{data,error}=await sb.rpc(`${p}_get_final_status`,{p_token:studentToken});
+async function renderChineseFinal(preloaded=null){
+  const p=cPrefix(student.course),{data,error}=preloaded!==null?{data:preloaded,error:null}:await sb.rpc(`${p}_get_final_status`,{p_token:studentToken});
   if(error||!data?.ok){$('#finalPane').innerHTML='<div class="card bad">기말고사 상태를 확인할 수 없습니다.</div>';return}
+  liveFinalSignature=liveSignature('final',data);
   if(data.submitted){
     if(!data.closed){$('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}${completedSubmitButton()}<div class="muted">서버 저장 시각: ${esc(fmtDT(data.submitted_at))}</div><div class="notice" style="margin-top:10px">교수님이 답안 제출을 마감한 뒤 점수와 정답·오답이 공개됩니다.</div></div>`;return}
     $('#finalPane').innerHTML=`<div class="card"><h3>기말고사</h3>${examLaptopGuide(false)}${completedSubmitButton()}<div class="ok">${data.score}/20 · ${fmt(data.converted)}/30</div>${mcResult(data,data.answers)}</div>`;return
@@ -361,10 +488,11 @@ async function renderChineseFinal(){
   if(data.open){$('#finalPane').innerHTML=`<div class="card">${examLaptopGuide(false)}<button id="startFinal" class="primary">기말고사 시작</button></div>`;$('#startFinal').onclick=()=>showChineseExam(1,20,true);return}
   $('#finalPane').innerHTML=`<div class="card">${examLaptopGuide(false)}<div class="muted">기말고사가 아직 공개되지 않았습니다.</div></div>`
 }
-async function renderLargeFinal(){
+async function renderLargeFinal(preloaded=null){
   clearInterval(draftTimer);draftTimer=null;largeExamAccessCode='';
-  const {data,error}=await sb.rpc('lg_get_final_status',{p_token:studentToken});
+  const {data,error}=preloaded!==null?{data:preloaded,error:null}:await sb.rpc('lg_get_final_status',{p_token:studentToken});
   if(error||!data?.ok){$('#finalPane').innerHTML='<div class="card bad">기말고사 상태를 확인할 수 없습니다.</div>';return}
+  liveFinalSignature=liveSignature('final',data);
   if(data.submitted){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}${completedSubmitButton()}<div class="ok" style="margin-top:8px">서버 저장 확인${data.submitted_at?` · ${esc(fmtDT(data.submitted_at))}`:''}</div><div class="muted" style="margin-top:8px">${!data.results_published?'기말고사 점수는 교수자 최종 승인 후 공개됩니다.':`최종 기말고사 점수 ${data.final_score==null?'-':fmt(data.final_score)} / 30`}</div></div>`;return}
   if(data.closed){$('#finalPane').innerHTML=`<div class="card"><h3 class="section-title">논술형 기말고사</h3>${examLaptopGuide(data.needs_code)}<div class="bad">기말고사 답안 제출이 마감되었습니다. 임시저장 및 최종제출을 할 수 없습니다.</div></div>`;return}
   if(!data.open){$('#finalPane').innerHTML=`<div class="card">${examLaptopGuide(data.needs_code)}<div class="muted">기말고사가 아직 공개되지 않았습니다.</div></div>`;return}
@@ -1182,6 +1310,7 @@ async function renderTeacherAttendance(){
           recentGateActions.set(gateKey,Date.now()+3000);
           const done=action==='open'?`${period}교시 ${label}을 열었습니다.`:`${period}교시 ${label}을 마감했습니다.`;
           msg($('#taMsg'),data.already?`${done} (이미 처리된 상태)`:done,true);
+          publishLive(sem.id,courseKey,'attendance');
           await load();
         }catch(e){
           msg($('#taMsg'),e?.message||'출석 버튼 변경에 실패했습니다.');
@@ -1355,10 +1484,11 @@ async function renderTeacherQuiz(){
       const row={semester_id:sem.id,round:nextRound,answer_key:['A','A','A','A','A'],is_open:false,is_closed:false,counted:true,scheduled_week:defaultWeek};
       const {error}=await sb.from(`${p}_quizzes`).insert(row);
       if(error)throw error;
+      publishLive(sem.id,teacherCourse,'quiz');
       await renderTeacherQuiz();
     }catch(e){alert(`제${nextRound}차 듣기평가 추가 실패: ${e?.message||String(e)}`);btn.disabled=false;btn.textContent=`제${nextRound}차 추가`}
   };
-  pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const changes={answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked};if(isChinese(teacherCourse))changes.scheduled_week=Number(card.querySelector('[data-qweek]').value);const {error}=await sb.from(`${p}_quizzes`).update(changes).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';setTimeout(()=>btn.textContent='설정 저장',900)}});
+  pane.querySelectorAll('[data-save-quiz]').forEach(btn=>btn.onclick=async()=>{const id=Number(btn.dataset.saveQuiz),card=btn.closest('.card'),count=Number(card.querySelector('[data-qcount]').value),answers=[...card.querySelectorAll('[data-qans]')].slice(0,count).map(x=>x.value);const changes={answer_key:answers,is_open:card.querySelector('[data-qopen]').checked,counted:card.querySelector('[data-qcounted]').checked};if(isChinese(teacherCourse))changes.scheduled_week=Number(card.querySelector('[data-qweek]').value);const {error}=await sb.from(`${p}_quizzes`).update(changes).eq('id',id);if(error)alert(error.message);else{btn.textContent='저장됨';publishLive(sem.id,teacherCourse,'quiz');setTimeout(()=>btn.textContent='설정 저장',900)}});
   // Attach click handlers before network requests; failed status requests must not leave inert buttons.
   let roster=[],subs=[],statusReady=false,statusError='';
   const byQuiz=new Map(), manualByQuiz=new Map();
@@ -1380,6 +1510,7 @@ async function renderTeacherQuiz(){
     try{
       const {data,error}=await sb.rpc(`${p}_close_quiz`,{p_semester_id:sem.id,p_quiz_id:qid});
       if(error||!data?.ok)throw new Error(data?.message||error?.message||'마감 실패');
+      publishLive(sem.id,teacherCourse,'quiz');
       await renderTeacherQuiz();
     }catch(e){alert(e?.message||String(e));btn.disabled=false}
   });
@@ -1421,8 +1552,8 @@ async function renderTeacherChineseFinal(){
   const done=new Set((subs||[]).map(x=>Number(x.student_id))),missing=(roster||[]).filter(st=>!done.has(Number(st.id))),submitted=done.size,total=(roster||[]).length;
   pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 기말고사</h3><div class="muted">20문항 × 1점 → 30점 환산</div></div><div class="toolbar"><b>${f.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button id="showFinalMissing">미제출자 보기</button>${f.is_closed?'':`<button id="closeFinal" class="danger">기말고사 답안 제출 마감</button>`}</div></div><div id="finalMissing" style="margin-top:8px"></div><div class="notice" style="margin-top:10px"><b>학생 노트북 접속 주소</b><br><a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a><br>Chrome/Edge → 교수자 학생접속 QR 주소 → 학생 → 학번+이름 로그인 → 기말고사</div><label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input id="finalOpen" type="checkbox" style="width:auto;min-height:auto" ${f.is_open?'checked':''} ${f.is_closed?'disabled':''}> 학생에게 공개</label><div class="ansgrid" style="margin-top:10px">${f.answer_key.map((a,i)=>`<label>${i+1}번<select data-fans>${['A','B','C','D'].map(c=>`<option ${a===c?'selected':''}>${c}</option>`).join('')}</select></label>`).join('')}</div><button id="saveFinal" class="primary" style="margin-top:10px">20문항 정답·공개 설정 저장</button><div id="finalMsg" class="muted" style="margin-top:8px"></div></div>`;
   $('#showFinalMissing').onclick=()=>{$('#finalMissing').innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>'};
-  if($('#closeFinal'))$('#closeFinal').onclick=async()=>{if(!confirm(`기말고사 답안 제출을 마감할까요?\n현재 제출 ${submitted}/${total}명입니다.\n마감 후에는 추가 제출할 수 없습니다.`))return;const {data,error}=await sb.rpc(`${p}_close_final`,{p_semester_id:sem.id});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');return}renderTeacherChineseFinal()};
-  $('#saveFinal').onclick=async()=>{const answer_key=[...pane.querySelectorAll('[data-fans]')].map(x=>x.value),is_open=$('#finalOpen').checked;const {error}=await sb.from(`${p}_final_exam`).upsert({semester_id:sem.id,answer_key,is_open},{onConflict:'semester_id'});if(error)msg($('#finalMsg'),error.message);else msg($('#finalMsg'),'기말고사 설정을 저장했습니다.',true)}
+  if($('#closeFinal'))$('#closeFinal').onclick=async()=>{if(!confirm(`기말고사 답안 제출을 마감할까요?\n현재 제출 ${submitted}/${total}명입니다.\n마감 후에는 추가 제출할 수 없습니다.`))return;const {data,error}=await sb.rpc(`${p}_close_final`,{p_semester_id:sem.id});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');return}publishLive(sem.id,teacherCourse,'final');renderTeacherChineseFinal()};
+  $('#saveFinal').onclick=async()=>{const answer_key=[...pane.querySelectorAll('[data-fans]')].map(x=>x.value),is_open=$('#finalOpen').checked;const {error}=await sb.from(`${p}_final_exam`).upsert({semester_id:sem.id,answer_key,is_open},{onConflict:'semester_id'});if(error)msg($('#finalMsg'),error.message);else{msg($('#finalMsg'),'기말고사 설정을 저장했습니다.',true);publishLive(sem.id,teacherCourse,'final')}}
 }
 async function renderTeacherLargeFinal(){
   const pane=$('#tfinal'),sem=selectedSemester(),sl=course(teacherCourse).slot;
@@ -1435,11 +1566,11 @@ async function renderTeacherLargeFinal(){
   const submittedRows=(subs||[]).filter(x=>x.is_submitted),submittedIds=new Set(submittedRows.map(x=>Number(x.student_id))),missing=(roster||[]).filter(st=>!submittedIds.has(Number(st.id))),submitted=submittedIds.size,total=(roster||[]).length;
   pane.innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">${esc(courseLabel(teacherCourse))} 논술형 기말고사</h3><div class="muted">문제 수는 자유 · 전체 배점 합계는 30점</div></div><div class="toolbar"><b>${ex?.is_closed?'<span class="bad">제출 마감됨</span>':`제출 ${submitted}/${total}`}</b><button id="showEssayMissing">미제출자 보기</button>${ex?.is_closed?'':`<button id="closeEssayFinal" class="danger">기말고사 답안 제출 마감</button>`}</div></div><div id="essayMissing" style="margin-top:8px"></div><div class="notice" style="margin-top:10px"><b>학생 노트북 접속 주소</b><br><a href="${STUDENT_SITE_URL}" target="_blank" rel="noopener">${STUDENT_SITE_URL}</a><br>Chrome/Edge → 교수자 학생접속 QR 주소 → 학생 → 학번+이름 로그인 → 기말고사<br><b>접속코드를 설정한 경우 학생에게 해당 코드도 알려주세요.</b></div><label style="display:flex;align-items:center;gap:6px;margin-top:10px"><input id="essayOpen" type="checkbox" style="width:auto;min-height:auto" ${ex?.is_open?'checked':''} ${ex?.is_closed?'disabled':''}> 학생에게 공개</label><label style="display:block;max-width:360px;margin-top:10px">시험 접속코드(선택)<input id="essayAccessCode" value="${esc(ex?.access_code||'')}" placeholder="비워두면 접속코드 없음" ${ex?.is_closed?'disabled':''}></label><div id="questionEditors" style="margin-top:12px"></div><div class="row"><button id="addEssayQ" ${ex?.is_closed?'disabled':''}>문제 추가</button><button id="saveEssayExam" class="primary" ${ex?.is_closed?'disabled':''}>문제·기준·공개 설정 저장</button></div><div id="essayTeacherMsg" class="muted" style="margin-top:8px"></div></div><div class="card"><div class="row"><div><h3 class="section-title">제출·채점 현황</h3><div class="muted">AI 점수는 제안점수이며 교수자가 최종 점수를 수정·확정할 수 있습니다.</div></div></div><div class="tablewrap"><table><thead><tr><th>학번</th><th>이름</th><th>제출</th><th>AI점수</th><th>교수자점수</th><th>반영점수</th><th>답안</th></tr></thead><tbody>${(roster||[]).map(s=>{const f=subMap.get(s.id);const applied=f?(f.teacher_score??f.ai_score??''):' ';return `<tr><td>${esc(s.student_no||'-')}</td><td>${esc(s.name)}</td><td>${f?.is_submitted?'✅':'-'}</td><td>${f?.ai_score??'-'}</td><td>${f?.teacher_score??'-'}</td><td><b>${applied===''?'-':applied}</b></td><td>${f?.is_submitted?`<button data-view-essay="${s.id}" class="smallbtn">보기·채점</button>`:'-'}</td></tr>`}).join('')}</tbody></table></div></div><div id="essayDetail"></div>`;
   $('#showEssayMissing').onclick=()=>{$('#essayMissing').innerHTML=missing.length?`<div class="notice"><b>미제출 ${missing.length}명</b><br>${missing.map(st=>`${esc(st.student_no||'-')} ${esc(st.name)}`).join(' · ')}</div>`:'<div class="ok">모든 학생이 제출했습니다.</div>'};
-  if($('#closeEssayFinal'))$('#closeEssayFinal').onclick=async()=>{if(!confirm(`기말고사 답안 제출을 마감할까요?\n현재 최종 제출 ${submitted}/${total}명입니다.\n마감 후에는 임시저장과 최종제출이 모두 차단됩니다.`))return;const {data,error}=await sb.rpc('lg_close_final',{p_semester_id:sem.id,p_slot:sl});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');return}renderTeacherLargeFinal()};
+  if($('#closeEssayFinal'))$('#closeEssayFinal').onclick=async()=>{if(!confirm(`기말고사 답안 제출을 마감할까요?\n현재 최종 제출 ${submitted}/${total}명입니다.\n마감 후에는 임시저장과 최종제출이 모두 차단됩니다.`))return;const {data,error}=await sb.rpc('lg_close_final',{p_semester_id:sem.id,p_slot:sl});if(error||!data?.ok){alert(data?.message||error?.message||'마감 실패');return}publishLive(sem.id,teacherCourse,'final');renderTeacherLargeFinal()};
   let editorQuestions=questions.map((q,i)=>({id:q.id||`q${i+1}`,prompt:q.prompt||'',max_score:Number(q.max_score||0),criteria:q.criteria||''}));
   const drawEditors=()=>{const box=$('#questionEditors');box.innerHTML=editorQuestions.map((q,i)=>`<div class="q criteria"><div class="row"><b>문제 ${i+1}</b><button data-remove-q="${i}" class="smallbtn danger" ${editorQuestions.length===1||ex?.is_closed?'disabled':''}>삭제</button></div><label>문제<textarea data-prompt="${i}" ${ex?.is_closed?'disabled':''}>${esc(q.prompt)}</textarea></label><div class="grid g2"><label>배점<input data-max="${i}" type="number" min="0" max="30" step="0.5" value="${q.max_score}" ${ex?.is_closed?'disabled':''}></label><label>정답에 필요한 핵심 내용<textarea data-criteria="${i}" placeholder="AI가 반드시 확인할 핵심 내용, 개념, 논점 등을 구체적으로 입력하세요." ${ex?.is_closed?'disabled':''}>${esc(q.criteria)}</textarea></label></div></div>`).join('');box.querySelectorAll('[data-remove-q]').forEach(b=>b.onclick=()=>{editorQuestions.splice(Number(b.dataset.removeQ),1);drawEditors()})};drawEditors();
   $('#addEssayQ').onclick=()=>{editorQuestions.push({id:`q${Date.now()}`,prompt:'',max_score:0,criteria:''});drawEditors()};
-  $('#saveEssayExam').onclick=async()=>{const qs=editorQuestions.map((q,i)=>({id:q.id||`q${i+1}`,prompt:$(`[data-prompt="${i}"]`).value.trim(),max_score:Number($(`[data-max="${i}"]`).value),criteria:$(`[data-criteria="${i}"]`).value.trim()}));if(qs.some(q=>!q.prompt)){msg($('#essayTeacherMsg'),'모든 문제 내용을 입력하세요.');return}const totalScore=qs.reduce((s,q)=>s+q.max_score,0);if(Math.abs(totalScore-30)>0.001){msg($('#essayTeacherMsg'),`배점 합계가 ${fmt(totalScore,1)}점입니다. 정확히 30점으로 맞춰주세요.`);return}const {error}=await sb.from('lg_final_exam').upsert({semester_id:sem.id,slot:sl,questions:qs,is_open:$('#essayOpen').checked,access_code:$('#essayAccessCode').value.trim(),updated_at:new Date().toISOString()},{onConflict:'semester_id,slot'});if(error)msg($('#essayTeacherMsg'),error.message);else{msg($('#essayTeacherMsg'),'기말고사 문제와 채점 기준을 저장했습니다.',true);setTimeout(renderTeacherLargeFinal,500)}};
+  $('#saveEssayExam').onclick=async()=>{const qs=editorQuestions.map((q,i)=>({id:q.id||`q${i+1}`,prompt:$(`[data-prompt="${i}"]`).value.trim(),max_score:Number($(`[data-max="${i}"]`).value),criteria:$(`[data-criteria="${i}"]`).value.trim()}));if(qs.some(q=>!q.prompt)){msg($('#essayTeacherMsg'),'모든 문제 내용을 입력하세요.');return}const totalScore=qs.reduce((s,q)=>s+q.max_score,0);if(Math.abs(totalScore-30)>0.001){msg($('#essayTeacherMsg'),`배점 합계가 ${fmt(totalScore,1)}점입니다. 정확히 30점으로 맞춰주세요.`);return}const {error}=await sb.from('lg_final_exam').upsert({semester_id:sem.id,slot:sl,questions:qs,is_open:$('#essayOpen').checked,access_code:$('#essayAccessCode').value.trim(),updated_at:new Date().toISOString()},{onConflict:'semester_id,slot'});if(error)msg($('#essayTeacherMsg'),error.message);else{msg($('#essayTeacherMsg'),'기말고사 문제와 채점 기준을 저장했습니다.',true);publishLive(sem.id,teacherCourse,'final');setTimeout(renderTeacherLargeFinal,500)}};
   pane.querySelectorAll('[data-view-essay]').forEach(b=>b.onclick=()=>showEssayDetail(Number(b.dataset.viewEssay),roster,subMap,questions,sem.id,sl));
 }
 async function showEssayDetail(studentId,roster,subMap,questions,semId,sl){const s=(roster||[]).find(x=>x.id===studentId),f=subMap.get(studentId);if(!s||!f)return;const feedback=f.ai_feedback||{};$('#essayDetail').innerHTML=`<div class="card"><div class="row"><div><h3 class="section-title">학번 ${esc(s.student_no||'-')} · ${esc(s.name)} 답안</h3><div class="muted">제출: ${f.submitted_at?new Date(f.submitted_at).toLocaleString():'-'}</div></div><button id="closeEssayDetail">닫기</button></div>${(questions||[]).map((q,i)=>`<div class="q"><div class="row"><b>${i+1}. ${esc(q.prompt)}</b><span class="badge">${q.max_score}점</span></div><div class="criteria"><b>교수자 채점 기준</b><div>${esc(q.criteria||'')}</div></div><div style="margin-top:10px;white-space:pre-wrap">${esc((f.answers||{})[q.id]||'')}</div></div>`).join('')}<div class="grid g2"><label>교수자 최종 점수 /30<input id="teacherFinalScore" type="number" min="0" max="30" step="0.1" value="${f.teacher_score??''}"></label><div><div class="muted">AI 제안 점수</div><div class="score">${f.ai_score==null?'-':fmt(f.ai_score)} / 30</div></div></div>${f.ai_feedback?`<div class="q"><b>AI 평가 설명</b><pre style="white-space:pre-wrap;font-family:inherit">${esc(JSON.stringify(f.ai_feedback,null,2))}</pre></div>`:''}<div class="row"><div><button id="aiGradeEssay">AI 채점</button> <button id="copyGradePacket">AI 채점용 내용 복사</button></div><button id="saveTeacherFinal" class="primary">교수자 점수 저장</button></div><div id="essayGradeMsg" class="muted" style="margin-top:8px"></div></div>`;
