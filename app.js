@@ -61,6 +61,7 @@ async function loadPublicInfo(){
 // 4과목 학생 화면 자동 갱신: 서버 푸시 + 연결 복구 + 활성 화면 재확인. 답안/성적 데이터는 수정하지 않음.
 let liveChannel=null,liveTimer=null,liveBusy=false,liveQueued=false,liveLast=0,liveRetryTimer=null,liveSocketReady=false;
 let liveAttendanceRefresh=null,liveQuizSignature=null,liveFinalSignature=null;
+let liveGeneration=0,liveRemoving=null,liveReconnectAt=0;
 function liveCourseKey(key){return key==='small1'?'chinese1':key==='small2'?'chinese2':key}
 function liveTopic(sem,key){return 'class-live:v1:'+Number(sem)+':'+String(liveCourseKey(key))}
 function liveTab(){return $('#stabs button.active')?.dataset.tab||'attendance'}
@@ -147,37 +148,49 @@ async function refreshLive(){
     if(liveQueued){liveQueued=false;setTimeout(()=>{if(liveReady())refreshLive()},900)}
   }
 }
+function releaseLiveChannel(){
+  const old=liveChannel;liveChannel=null;liveSocketReady=false;
+  if(old){
+    const prior=liveRemoving;
+    liveRemoving=Promise.resolve(prior).catch(()=>{}).then(()=>sb?.removeChannel(old)).catch(()=>{});
+  }
+  return liveRemoving||Promise.resolve();
+}
 function stopLive(keepAttendance=false){
+  liveGeneration++;
   if(liveTimer){clearInterval(liveTimer);liveTimer=null}
   if(liveRetryTimer){clearTimeout(liveRetryTimer);liveRetryTimer=null}
-  liveSocketReady=false;
-  if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
+  releaseLiveChannel();
   if(!keepAttendance)liveAttendanceRefresh=null;
   liveQuizSignature=null;liveFinalSignature=null;liveLast=0;liveQueued=false;
 }
 function startLive(){
-  if(liveTimer){clearInterval(liveTimer);liveTimer=null}
-  liveSocketReady=false;
-  if(liveChannel){try{sb?.removeChannel(liveChannel)}catch(e){}liveChannel=null}
   if(!sb||!student||!studentToken||$('#studentSection')?.classList.contains('hidden'))return;
-  const token=studentToken,key=student.course,sem=student.semester_id;
-  try{liveChannel=sb.channel(liveTopic(sem,key))
-    .on('broadcast',{event:'status'},()=>{
-      if(studentToken===token&&student?.course===key&&Number(student?.semester_id)===Number(sem))refreshLive();
-    })
-    .subscribe((status,error)=>{
-      if(studentToken!==token||student?.course!==key||Number(student?.semester_id)!==Number(sem))return;
-      liveSocketReady=status==='SUBSCRIBED';
-      if(liveSocketReady)refreshLive();
-      else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')
-        console.warn('수업 알림 연결 재시도 중:',status,error?.message||'');
-    })}catch(e){liveSocketReady=false;console.warn('실시간 알림 연결 불가 (주기적 자동 확인 사용):',e)}
-  // 정상 연결이면 서버 푸시가 우선. 숨겨진 탭에는 요청하지 않는다.
-  // 연결 실패/화면 복귀 시 2.5초, 정상 연결에서도 출석 5초 / 시험 10초마다 검증.
+  const generation=++liveGeneration,token=studentToken,key=student.course,sem=student.semester_id;
+  if(liveTimer)clearInterval(liveTimer);
+  const removed=releaseLiveChannel();
+  liveReconnectAt=Date.now();
+  const valid=()=>generation===liveGeneration&&studentToken===token&&student?.course===key&&Number(student?.semester_id)===Number(sem);
+  // 먼저 이전 채널 종료를 기다려 동일 토픽의 재구독 충돌을 방지한다.
+  Promise.resolve(removed).then(()=>{
+    if(!valid())return;
+    liveChannel=sb.channel(liveTopic(sem,key))
+      .on('broadcast',{event:'status'},()=>{if(valid())refreshLive()})
+      .subscribe((status,error)=>{
+        if(!valid())return;
+        liveSocketReady=status==='SUBSCRIBED';
+        if(liveSocketReady)refreshLive();
+        else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')
+          console.warn('수업 알림 연결 재시도 중:',status,error?.message||'');
+      });
+  }).catch(e=>{if(valid()){liveSocketReady=false;console.warn('실시간 알림 연결 불가:',e)}});
+  // 연결이 안 되거나 끊기면 2.5초 간격으로 확인하고 15초마다 재연결을 시도.
+  // 정상 연결에서도 출석 최대 약 5초, 시험 약 10초 간격의 보조 조회를 유지.
   liveTimer=setInterval(()=>{
     if(!liveReady())return;
     const maxAge=liveSocketReady?(liveTab()==='attendance'?5000:10000):2500;
     if(Date.now()-liveLast>=maxAge-100)refreshLive();
+    if(!liveSocketReady&&Date.now()-liveReconnectAt>=15000)startLive();
   },2500);
   refreshLive();
 }
@@ -200,9 +213,10 @@ function publishLive(sem,key,kind){
 let liveSuspended=false;
 function resumeLive(){
   if(!liveReady())return;
-  const reconnect=liveSuspended||!liveChannel||!liveSocketReady;
+  const reconnect=liveSuspended||!liveTimer||!liveSocketReady;
   liveSuspended=false;
-  if(reconnect)startLive();
+  // focus/pageshow/visibilitychange가 연속 발생해도 재연결은 한 번만 시작한다.
+  if(!liveTimer||(reconnect&&Date.now()-liveReconnectAt>=2000))startLive();
   else refreshLive();
 }
 document.addEventListener('visibilitychange',()=>{
@@ -353,6 +367,12 @@ async function renderStudentAttendance(){
       word.placeholder=`현재 ${open.join('·')} 출석 단어 입력`;
       // 서버에 아직 필요한 시작/종료 출석이 열려 있으면 이전 성공 기록 때문에 새 인증을 막지 않는다.
       setButton('출석 확인','#2563eb',false);
+    }else if(!isFinalized&&((startDone&&!endDone&&x?.end_state!=='closed')||(!startDone&&endDone&&x?.start_state!=='closed'))){
+      const kind=startDone?'시작':'종료';
+      state.innerHTML=`<span style="color:#16a34a">${p}교시 · ${kind} 확인 완료</span>`;
+      hint.innerHTML=`<b style="color:#15803d">✓ ${kind} 출석 확인 완료</b> · 다음 출석이 열리면 입력할 수 있습니다.`;
+      word.placeholder='다음 출석 대기';
+      setButton(`✓ ${kind} 확인 완료`,'#16a34a',true);
     }else if(hasClosed){
       hint.innerHTML='<b style="color:#dc2626">출석 입력이 마감되었습니다. 이미 완료된 확인 기록은 유지됩니다.</b>';
       word.placeholder='출석 입력 마감';
@@ -425,7 +445,7 @@ async function renderStudentAttendance(){
       updateSelectedHint();
     }
   };
-  liveAttendanceRefresh=()=>refresh(false);
+  liveAttendanceRefresh=()=>attendanceSubmitting?Promise.resolve():refresh(false);
   refresh(true);
 }
 
